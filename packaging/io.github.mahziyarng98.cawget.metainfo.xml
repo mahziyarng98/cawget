@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata. URLs and screenshot links assume the repository github.com/mahziyarng98/cawget. -->
+<component type="desktop-application">
+  <id>io.github.mahziyarng98.cawget</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Cawget</name>
+  <summary>Fast segmented download manager</summary>
+  <developer id="io.github.mahziyarng98">
+    <name>mahziyarng98</name>
+  </developer>
+  <description>
+    <p>
+      Cawget downloads files over HTTP and HTTPS using several connections at once, and resumes
+      interrupted downloads where they stopped, also after a crash.
+    </p>
+    <ul>
+      <li>Parallel segments with automatic rebalancing of slow connections</li>
+      <li>Persistent queue with scheduling, retries, a speed limit and SHA-256 verification</li>
+      <li>Categories by file type, each with its own download folder</li>
+      <li>Adapts to any window size, from small tiles to 4K; light and dark themes; right-to-left layout</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">Cawget.desktop</launchable>
+  <url type="homepage">https://github.com/mahziyarng98/cawget</url>
+  <url type="bugtracker">https://github.com/mahziyarng98/cawget/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Download list on a wide screen</caption>
+      <image>https://raw.githubusercontent.com/mahziyarng98/cawget/main/docs/screenshots/wide.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Half-screen window in the light theme</caption>
+      <image>https://raw.githubusercontent.com/mahziyarng98/cawget/main/docs/screenshots/half-screen.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Compact layout in a small window</caption>
+      <image>https://raw.githubusercontent.com/mahziyarng98/cawget/main/docs/screenshots/compact.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+  <keywords>
+    <keyword>download</keyword>
+    <keyword>download manager</keyword>
+    <keyword>resume</keyword>
+    <keyword>http</keyword>
+  </keywords>
+  <provides>
+    <binary>cawget</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-04">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

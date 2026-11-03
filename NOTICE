@@ -1,0 +1,20 @@
+Cawget (Cawget Download Manager)
+A fast segmented download manager for Linux (Rust, Tauri)
+Copyright (C) 2026 mahziyarng98
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the file LICENSE for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+Third-party components
+----------------------
+Cawget includes third-party components under their own licences, all compatible with GPL-3.0-or-later:
+- THIRD_PARTY_LICENSES.md lists the Rust crates and npm packages compiled into the programs, with their
+  licence texts.
+- docs/BUNDLED_LIBRARIES.md lists the system libraries (GTK, WebKitGTK and their dependencies) that the
+  AppImage bundles, with their licences and where to obtain their source code.

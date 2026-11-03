@@ -1,0 +1,17 @@
+[package]
+name = "cawget-testserver"
+description = "In-process HTTP/HTTPS server with ranges, throttling and failure modes, for tests only"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+bytes = "1"
+futures-util = "0.3"
+sha2 = "0.11"

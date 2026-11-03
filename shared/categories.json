@@ -1,0 +1,100 @@
+{
+  "_comment": "Download categories by file extension. Single source for cawget-core (Rust) and the Cawget UI (TypeScript).",
+  "categories": [
+    {
+      "id": "compressed",
+      "label": "Archives",
+      "ext": [
+        "zip",
+        "rar",
+        "7z",
+        "gz",
+        "tgz",
+        "xz",
+        "txz",
+        "bz2",
+        "tbz",
+        "zst",
+        "tar",
+        "lz",
+        "lzma",
+        "cab",
+        "iso",
+        "img"
+      ]
+    },
+    {
+      "id": "documents",
+      "label": "Documents",
+      "ext": [
+        "pdf",
+        "doc",
+        "docx",
+        "odt",
+        "rtf",
+        "txt",
+        "md",
+        "epub",
+        "xls",
+        "xlsx",
+        "ods",
+        "csv",
+        "ppt",
+        "pptx",
+        "odp"
+      ]
+    },
+    {
+      "id": "music",
+      "label": "Audio",
+      "ext": [
+        "mp3",
+        "flac",
+        "ogg",
+        "oga",
+        "opus",
+        "wav",
+        "m4a",
+        "aac",
+        "wma",
+        "aiff"
+      ]
+    },
+    {
+      "id": "programs",
+      "label": "Software",
+      "ext": [
+        "exe",
+        "msi",
+        "deb",
+        "rpm",
+        "appimage",
+        "apk",
+        "dmg",
+        "pkg",
+        "run",
+        "sh",
+        "flatpak",
+        "snap"
+      ]
+    },
+    {
+      "id": "video",
+      "label": "Video",
+      "ext": [
+        "mp4",
+        "mkv",
+        "webm",
+        "mov",
+        "avi",
+        "wmv",
+        "flv",
+        "m4v",
+        "mpg",
+        "mpeg",
+        "ts",
+        "3gp"
+      ]
+    }
+  ]
+}

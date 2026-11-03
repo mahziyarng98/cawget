@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Cawget
+GenericName=Download Manager
+Comment=A fast segmented download manager for Linux
+Exec=cawget
+Icon=cawget
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;manager;http;resume;
+StartupWMClass=cawget

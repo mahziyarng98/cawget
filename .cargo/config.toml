@@ -1,0 +1,4 @@
+# Tests talk to servers on 127.0.0.1; never send that traffic through a proxy from the environment.
+[env]
+NO_PROXY = { value = "127.0.0.1,localhost,::1", force = true }
+no_proxy = { value = "127.0.0.1,localhost,::1", force = true }

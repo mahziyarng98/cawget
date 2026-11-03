@@ -1,0 +1,86 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cawget",
+  "version": "0.1.0",
+  "identifier": "io.github.mahziyarng98.cawget",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "width": 1180,
+        "height": 720,
+        "minWidth": 480,
+        "minHeight": 360,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "appimage",
+      "deb",
+      "rpm"
+    ],
+    "publisher": "mahziyarng98",
+    "homepage": "https://github.com/mahziyarng98/cawget",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../../LICENSE",
+    "copyright": "Copyright (C) 2026 mahziyarng98",
+    "category": "Utility",
+    "shortDescription": "A fast segmented download manager for Linux",
+    "longDescription": "Downloads files over HTTP and HTTPS with several connections at once, resumes interrupted downloads, and keeps a persistent queue with scheduling and a speed limit.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/share/doc/cawget/LICENSE": "../../LICENSE",
+          "/usr/share/doc/cawget/NOTICE": "../../NOTICE",
+          "/usr/share/doc/cawget/THIRD_PARTY_LICENSES.md": "../../THIRD_PARTY_LICENSES.md",
+          "/usr/share/doc/cawget/BUNDLED_LIBRARIES.md": "../../docs/BUNDLED_LIBRARIES.md",
+          "/usr/share/metainfo/io.github.mahziyarng98.cawget.metainfo.xml": "../../packaging/io.github.mahziyarng98.cawget.metainfo.xml"
+        }
+      },
+      "deb": {
+        "section": "net",
+        "desktopTemplate": "../../packaging/cawget.desktop",
+        "files": {
+          "/usr/share/doc/cawget/LICENSE": "../../LICENSE",
+          "/usr/share/doc/cawget/NOTICE": "../../NOTICE",
+          "/usr/share/doc/cawget/THIRD_PARTY_LICENSES.md": "../../THIRD_PARTY_LICENSES.md",
+          "/usr/share/doc/cawget/BUNDLED_LIBRARIES.md": "../../docs/BUNDLED_LIBRARIES.md",
+          "/usr/share/metainfo/io.github.mahziyarng98.cawget.metainfo.xml": "../../packaging/io.github.mahziyarng98.cawget.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "release": "1",
+        "desktopTemplate": "../../packaging/cawget.desktop",
+        "files": {
+          "/usr/share/doc/cawget/LICENSE": "../../LICENSE",
+          "/usr/share/doc/cawget/NOTICE": "../../NOTICE",
+          "/usr/share/doc/cawget/THIRD_PARTY_LICENSES.md": "../../THIRD_PARTY_LICENSES.md",
+          "/usr/share/doc/cawget/BUNDLED_LIBRARIES.md": "../../docs/BUNDLED_LIBRARIES.md",
+          "/usr/share/metainfo/io.github.mahziyarng98.cawget.metainfo.xml": "../../packaging/io.github.mahziyarng98.cawget.metainfo.xml"
+        }
+      }
+    }
+  },
+  "mainBinaryName": "cawget"
+}

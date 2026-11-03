@@ -1,0 +1,27 @@
+[package]
+name = "cawget-cli"
+description = "cawget-cli: command line of the Cawget Download Manager, a fast segmented download manager for Linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "cawget-cli"
+path = "src/main.rs"
+
+[dependencies]
+cawget-core = { path = "../cawget-core" }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio-util = "0.7"
+indicatif = "0.18"
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+cawget-testserver = { path = "../cawget-testserver" }

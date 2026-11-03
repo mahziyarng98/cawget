@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not report security problems here; see SECURITY.md instead.
+        Please remove passwords, cookies and private links from logs and screenshots.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Cawget version
+      description: Help > About, or `cawget-cli --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: How did you install it?
+      options: [AppImage, .deb, .rpm, AUR (cawget-bin), Built from source]
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: e.g. Fedora 41, GNOME on Wayland
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or screenshots
+      description: Terminal output (start the app from a terminal) or screenshots, if they help.

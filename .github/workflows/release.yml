@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    env:
+      # The AppImage tooling runs without FUSE on the runner.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("gui/src-tauri/tauri.conf.json"))["version"])')
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != v${version}"; exit 1; }
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: System libraries and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential file libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev \
+            libxdo-dev libssl-dev xdg-utils rpm2cpio cpio
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Third-party licence list is up to date
+        run: |
+          cargo fetch --locked
+          python3 scripts/third_party_licenses.py --check
+
+      # Same flags as documented in README.md: no home directory or checkout path in the binaries.
+      - name: Build AppImage, .deb and .rpm
+        working-directory: gui
+        env:
+          NO_STRIP: "true"
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=${HOME}=~ --remap-path-prefix=$(cd .. && pwd)=."
+          npx tauri build
+
+      - name: Collect the packages
+        run: |
+          mkdir -p out
+          cp target/release/bundle/appimage/*.AppImage target/release/bundle/deb/*.deb target/release/bundle/rpm/*.rpm out/
+          ls -la out
+
+      - name: No build paths or user names in the shipped binaries
+        run: |
+          mkdir -p scan/deb scan/rpm
+          appimage=$(realpath out/*.AppImage)
+          (cd scan && "${appimage}" --appimage-extract >/dev/null)
+          dpkg-deb -x out/*.deb scan/deb
+          (cd scan/rpm && rpm2cpio ../../out/*.rpm | cpio -i -d -m --quiet)
+          status=0
+          for bin in target/release/cawget scan/squashfs-root/usr/bin/cawget scan/deb/usr/bin/cawget scan/rpm/usr/bin/cawget; do
+            for pattern in "/home/" "${HOME}" "/${USER}/" "${GITHUB_WORKSPACE}"; do
+              if strings -a "${bin}" | grep -F -q -- "${pattern}"; then
+                echo "::error::${bin} contains ${pattern}"
+                status=1
+              fi
+            done
+          done
+          for doc in LICENSE THIRD_PARTY_LICENSES.md; do
+            test -f "scan/squashfs-root/usr/share/doc/cawget/${doc}" || { echo "::error::AppImage lacks ${doc}"; status=1; }
+          done
+          exit "${status}"
+
+      - name: List the libraries bundled in the AppImage
+        run: |
+          {
+            echo "Libraries bundled in Cawget_${VERSION}_amd64.AppImage, built on Ubuntu 22.04."
+            echo "Source: apt-get source <package> on Ubuntu 22.04, or https://launchpad.net/ubuntu/+source/<package>"
+            echo
+            find scan/squashfs-root/usr/lib -name '*.so*' -type f -printf '%f\n' | sort -u | while read -r lib; do
+              path=$(dpkg -S "/${lib}" 2>/dev/null | head -n1 || true)
+              pkg=${path%%:*}
+              if [ -n "${path}" ]; then
+                src=$(dpkg-query -W -f='${source:Package} ${Version}' "${pkg}" 2>/dev/null || true)
+                echo "${lib}  ${pkg}  (source: ${src})"
+              else
+                echo "${lib}  (not from a Debian package)"
+              fi
+            done
+          } > out/bundled-libraries.txt
+          cat out/bundled-libraries.txt
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          Cawget ${VERSION}
+
+          Packages: AppImage (any recent x86_64 Linux), .deb, .rpm. Verify downloads with SHA256SUMS.
+
+          The AppImage bundles GTK, WebKitGTK and their dependencies from Ubuntu 22.04; bundled-libraries.txt
+          lists them with their source packages (apt-get source <package>, or launchpad.net/ubuntu/+source/<package>).
+          Licences: LICENSE, THIRD_PARTY_LICENSES.md and docs/BUNDLED_LIBRARIES.md in the repository.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" --draft --title "Cawget ${VERSION}" --notes-file notes.md out/*

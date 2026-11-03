@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/cawget-core", "crates/cawget-cli", "crates/cawget-testserver", "gui/src-tauri"]
+default-members = ["crates/cawget-core", "crates/cawget-cli", "crates/cawget-testserver", "gui/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+authors = ["mahziyarng98 <289230375+mahziyarng98@users.noreply.github.com>"]
+rust-version = "1.90"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+opt-level = 3

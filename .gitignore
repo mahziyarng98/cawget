@@ -1,0 +1,26 @@
+# build output
+/target/
+/gui/src-tauri/target/
+/gui/src-tauri/gen/
+/gui/dist/
+/gui/node_modules/
+*.AppImage
+*.deb
+*.rpm
+
+# local data and secrets
+*.db
+*.db-wal
+*.db-shm
+*.part
+.env
+.env.*
+*.pem
+*.key
+*.local.txt
+
+# editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

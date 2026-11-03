@@ -1,0 +1,29 @@
+# Maintainer: mahziyarng98 <289230375+mahziyarng98@users.noreply.github.com>
+#
+# Binary package built from the .deb attached to the GitHub release.
+# Before publishing a release to the AUR:
+#   1. set pkgver to the released version,
+#   2. replace the sha256sums placeholder with the value for the .deb from the release's SHA256SUMS,
+#   3. regenerate .SRCINFO: makepkg --printsrcinfo > .SRCINFO
+
+pkgname=cawget-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Fast segmented download manager for Linux (desktop app)'
+arch=('x86_64')
+url='https://github.com/mahziyarng98/cawget'
+license=('GPL-3.0-or-later')
+depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'hicolor-icon-theme')
+optdepends=('libayatana-appindicator: system tray icon')
+provides=('cawget')
+conflicts=('cawget')
+source=("cawget-${pkgver}.deb::${url}/releases/download/v${pkgver}/Cawget_${pkgver}_amd64.deb")
+# PLACEHOLDER: replace with the sha256 of Cawget_${pkgver}_amd64.deb from the release's SHA256SUMS.
+sha256sums=('PLACEHOLDER_SHA256_FROM_RELEASE_SHA256SUMS')
+
+package() {
+  bsdtar -xf data.tar.* -C "${pkgdir}"
+  install -Dm644 "${pkgdir}/usr/share/doc/cawget/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${pkgdir}/usr/share/doc/cawget/THIRD_PARTY_LICENSES.md" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_LICENSES.md"
+}

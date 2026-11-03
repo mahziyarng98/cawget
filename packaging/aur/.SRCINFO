@@ -1,0 +1,20 @@
+pkgbase = cawget-bin
+	pkgdesc = Fast segmented download manager for Linux (desktop app)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/mahziyarng98/cawget
+	arch = x86_64
+	license = GPL-3.0-or-later
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = glib2
+	depends = cairo
+	depends = gdk-pixbuf2
+	depends = hicolor-icon-theme
+	optdepends = libayatana-appindicator: system tray icon
+	provides = cawget
+	conflicts = cawget
+	source = cawget-0.1.0.deb::https://github.com/mahziyarng98/cawget/releases/download/v0.1.0/Cawget_0.1.0_amd64.deb
+	sha256sums = PLACEHOLDER_SHA256_FROM_RELEASE_SHA256SUMS
+
+pkgname = cawget-bin
