@@ -10,11 +10,15 @@ pkgbase = cawget-bin
 	depends = glib2
 	depends = cairo
 	depends = gdk-pixbuf2
+	depends = libsoup3
+	depends = dbus
 	depends = hicolor-icon-theme
 	optdepends = libayatana-appindicator: system tray icon
 	provides = cawget
 	conflicts = cawget
+	options = !strip
+	options = !debug
 	source = cawget-0.1.0.deb::https://github.com/mahziyarng98/cawget/releases/download/v0.1.0/Cawget_0.1.0_amd64.deb
-	sha256sums = PLACEHOLDER_SHA256_FROM_RELEASE_SHA256SUMS
+	sha256sums = b0daf1a61ec9706d6537aa9ab56d3930d17138efc866a7bbb8ee5fe2ede27e9f
 
 pkgname = cawget-bin

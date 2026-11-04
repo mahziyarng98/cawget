@@ -3,7 +3,7 @@
 # Binary package built from the .deb attached to the GitHub release.
 # Before publishing a release to the AUR:
 #   1. set pkgver to the released version,
-#   2. replace the sha256sums placeholder with the value for the .deb from the release's SHA256SUMS,
+#   2. set sha256sums to the value for the .deb from the release's SHA256SUMS,
 #   3. regenerate .SRCINFO: makepkg --printsrcinfo > .SRCINFO
 
 pkgname=cawget-bin
@@ -13,13 +13,13 @@ pkgdesc='Fast segmented download manager for Linux (desktop app)'
 arch=('x86_64')
 url='https://github.com/mahziyarng98/cawget'
 license=('GPL-3.0-or-later')
-depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'hicolor-icon-theme')
+depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'libsoup3' 'dbus' 'hicolor-icon-theme')
 optdepends=('libayatana-appindicator: system tray icon')
 provides=('cawget')
 conflicts=('cawget')
+options=('!strip' '!debug')
 source=("cawget-${pkgver}.deb::${url}/releases/download/v${pkgver}/Cawget_${pkgver}_amd64.deb")
-# PLACEHOLDER: replace with the sha256 of Cawget_${pkgver}_amd64.deb from the release's SHA256SUMS.
-sha256sums=('PLACEHOLDER_SHA256_FROM_RELEASE_SHA256SUMS')
+sha256sums=('b0daf1a61ec9706d6537aa9ab56d3930d17138efc866a7bbb8ee5fe2ede27e9f')
 
 package() {
   bsdtar -xf data.tar.* -C "${pkgdir}"

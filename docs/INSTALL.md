@@ -16,6 +16,7 @@ In the commands below, replace `<version>` with the version you downloaded, for 
 
 - **Built and packaged on Ubuntu 22.04 (x86_64)** by the project's release workflow, which also runs the
   automated test suite there.
+- **AppImage manually tested on Arch Linux (Hyprland)** on 2026-11-04.
 - **Untested:** installing and running the packages on any particular distribution, including Ubuntu 22.04
   itself, other Ubuntu or Debian versions, Fedora, openSUSE and others. Reports are welcome in the
   [issue tracker](https://github.com/mahziyarng98/cawget/issues).
