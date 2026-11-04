@@ -8,7 +8,7 @@ Cawget is distributed as ready-made packages on the
 | Any 64-bit (x86_64) Linux | AppImage, no installation needed | [AppImage](#appimage-any-x86_64-linux-no-installation) |
 | Debian, Ubuntu, Linux Mint and other Debian-based systems | `.deb` | [Debian and Ubuntu](#debian-ubuntu-and-derivatives-deb) |
 | Fedora, openSUSE and other RPM-based systems | `.rpm` | [Fedora and openSUSE](#fedora-opensuse-and-other-rpm-systems-rpm) |
-| Arch Linux | AUR package: **coming soon** | [Arch Linux](#arch-linux-coming-soon) |
+| Arch Linux | AUR: **coming soon** (AUR registration is temporarily closed); for now `makepkg` or the AppImage | [Arch Linux](#arch-linux) |
 
 In the commands below, replace `<version>` with the version you downloaded, for example `0.1.0`.
 
@@ -17,9 +17,12 @@ In the commands below, replace `<version>` with the version you downloaded, for 
 - **Built and packaged on Ubuntu 22.04 (x86_64)** by the project's release workflow, which also runs the
   automated test suite there.
 - **AppImage manually tested on Arch Linux (Hyprland)** on 2026-11-04.
-- **Untested:** installing and running the packages on any particular distribution, including Ubuntu 22.04
-  itself, other Ubuntu or Debian versions, Fedora, openSUSE and others. Reports are welcome in the
-  [issue tracker](https://github.com/mahziyarng98/cawget/issues).
+- **Arch package built with `makepkg`** from the downloaded PKGBUILD on Arch Linux on 2026-11-04; installing the
+  resulting package has not been tested yet.
+- **Untested:** installing and running the .deb and .rpm packages on any distribution (including Ubuntu 22.04
+  itself, other Ubuntu or Debian versions, Fedora, openSUSE and others), and installing the Arch package with
+  `makepkg -si`. The AppImage has been manually tested only on Arch Linux (Hyprland), on 2026-11-04, as noted
+  above. Reports are welcome in the [issue tracker](https://github.com/mahziyarng98/cawget/issues).
 - Only 64-bit x86 (x86_64 / amd64) packages are provided. No packages for ARM or other architectures.
 
 ## Check your download (recommended)
@@ -95,14 +98,29 @@ Debian 11; on those, use the AppImage.
 
 To remove it: `sudo dnf remove cawget` (Fedora) or `sudo zypper remove cawget` (openSUSE).
 
-## Arch Linux (coming soon)
+## Arch Linux
 
-> **Coming soon, not available yet.** An AUR package named `cawget-bin` is being prepared; until it is
-> published, `yay -S cawget-bin` or `makepkg` from the AUR will not find it. Use the AppImage in the meantime.
-> The package recipe is kept in this repository under `packaging/aur/`.
+> **AUR package: coming soon (AUR registration is temporarily closed).** Until it is published, `yay -S cawget-bin`
+> will not find it.
 
-Once it is published, it will be installed with an AUR helper such as `yay -S cawget-bin`, or manually with
-`git clone https://aur.archlinux.org/cawget-bin.git`, `cd cawget-bin` and `makepkg -si`.
+In the meantime you have two options:
+
+- **Build the package yourself** from the recipe (PKGBUILD) in this repository. `makepkg` downloads the `.deb`
+  from the release, checks its SHA-256, turns it into an Arch package, and `-si` installs it together with the
+  libraries it needs:
+
+  ```sh
+  mkdir cawget-bin && cd cawget-bin
+  curl -LO https://raw.githubusercontent.com/mahziyarng98/cawget/main/packaging/aur/PKGBUILD
+  makepkg -si
+  ```
+
+  This needs the `base-devel` group (`sudo pacman -S --needed base-devel`). It is good practice to read a
+  PKGBUILD before running `makepkg`. To remove the package: `sudo pacman -R cawget-bin`.
+
+- **Use the [AppImage](#appimage-any-x86_64-linux-no-installation)**, which needs no installation.
+
+Once the AUR package is published, it can be installed with an AUR helper such as `yay -S cawget-bin`.
 
 ## Troubleshooting
 

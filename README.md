@@ -16,11 +16,13 @@ Download a package from the [Releases page](https://github.com/mahziyarng98/cawg
 - **AppImage** (any x86_64 Linux, no installation): `chmod +x Cawget_<version>_amd64.AppImage`, then run it.
 - **Debian / Ubuntu:** `sudo apt install ./Cawget_<version>_amd64.deb`, then start **Cawget** from the menu.
 - **Fedora / openSUSE:** `sudo dnf install ./Cawget-<version>-1.x86_64.rpm` (or `zypper install`).
-- **Arch Linux:** an AUR package is *coming soon*; use the AppImage for now.
+- **Arch Linux:** an AUR package is *coming soon* (AUR registration is temporarily closed). For now, download the
+  [PKGBUILD](https://raw.githubusercontent.com/mahziyarng98/cawget/main/packaging/aur/PKGBUILD) into an empty
+  folder and run `makepkg -si` there ([details](docs/INSTALL.md#arch-linux)), or use the AppImage.
 
-Packages are built and the automated tests run on Ubuntu 22.04 (x86_64); installing them on other distributions
-is untested so far. Step-by-step instructions (checksums, removing, where your data is):
-[docs/INSTALL.md](docs/INSTALL.md).
+Packages are built and the automated tests run on Ubuntu 22.04 (x86_64). The AppImage was manually tested on Arch
+Linux (Hyprland) on 2026-11-04; installing the .deb, the .rpm and the Arch package (`makepkg -si`) is untested so
+far. Step-by-step instructions (checksums, removing, where your data is): [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Features
 
