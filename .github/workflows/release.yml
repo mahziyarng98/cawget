@@ -96,7 +96,7 @@ jobs:
               path=$(dpkg -S "*/${lib}" 2>/dev/null | head -n1 || true)
               pkg=${path%%:*}
               if [ -n "${path}" ]; then
-                src=$(dpkg-query -W -f='${source:Package} ${Version}' "${pkg}" 2>/dev/null || true)
+                src=$(dpkg-query -W -f='${source:Package} ${source:Version}' "${pkg}" 2>/dev/null || true)
                 echo "${lib}  ${pkg}  (source: ${src})"
               else
                 echo "${lib}  (not from a Debian package)"

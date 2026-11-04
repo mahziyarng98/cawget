@@ -2,6 +2,8 @@
 # Derived from the release asset bundled-libraries.txt. class: copyleft = a copyright file in the AppImage
 # names a copyleft licence (GPL, LGPL, MPL, ...); permissive = none does; unknown = no copyright file in the
 # AppImage, decided from debian/copyright when the sources are fetched.
+# The version column is the bundled binary package's version (as recorded in bundled-libraries.txt); the
+# source version is resolved from it when fetching and can differ (e.g. by epoch).
 # source	version	class	licences (permissive only)	binary packages	libraries
 at-spi2-atk	2.38.0-3	copyleft		libatk-bridge2.0-0	libatk-bridge-2.0.so.0
 at-spi2-core	2.44.0-3	copyleft		libatspi2.0-0	libatspi.so.0

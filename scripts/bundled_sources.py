@@ -3,8 +3,10 @@
 
 Reads packaging/bundled-sources/<tag>.tsv (source package, exact version, class, ...) and, on Ubuntu 22.04
 with deb-src enabled:
-  fetch     apt-get source --download-only <package>=<version> for every "copyleft" or "unknown" package
-            (apt checks each file against the signed archive index)
+  fetch     apt-get source --download-only <binary package>=<binary version> for every "copyleft" or "unknown"
+            source package: apt resolves the exact bundled binary to the source it was built from, and checks
+            each file against the signed archive index
+            (the version column is the bundled binary's version; the source version can differ, e.g. by epoch)
   verify    checks every file against the sizes and SHA-256 sums in its .dsc
   classify  decides the "unknown" packages from their debian/copyright (included if copyleft)
   pack      writes README.md and <name>.tar.zst (deterministic tar, zstd)
@@ -73,9 +75,9 @@ def fetch(rows: list[dict], work: Path) -> None:
             continue
         d = work / f"{r['source']}_{no_epoch(r['version'])}"
         d.mkdir(parents=True, exist_ok=True)
-        cmd = ["apt-get", "source", "--download-only", "--only-source", f"{r['source']}={r['version']}"]
+        cmd = ["apt-get", "source", "--download-only", f"{r['binaries'][0]}={r['version']}"]
         if subprocess.run(cmd, cwd=d).returncode != 0:
-            failed.append(f"{r['source']}={r['version']}")
+            failed.append(f"{r['binaries'][0]}={r['version']} ({r['source']})")
     if failed:
         sys.exit("could not fetch: " + ", ".join(failed))
 
@@ -89,6 +91,12 @@ def verify(rows: list[dict], work: Path) -> None:
         if len(dscs) != 1:
             sys.exit(f"{d.name}: expected one .dsc, found {len(dscs)}")
         r["dsc"] = dscs[0].name
+        fields = dict(re.findall(r"^(Source|Version): (.+)$", dscs[0].read_text(errors="replace"), re.M))
+        if fields.get("Source") != r["source"]:
+            sys.exit(f"{d.name}: .dsc is for {fields.get('Source')}, expected {r['source']}")
+        r["source_version"] = fields["Version"]
+        if r["source_version"] != r["version"]:
+            print(f"note: {r['source']}: source version {r['source_version']} (bundled binary version {r['version']})")
         r["files"] = []
         for name, size, sha in dsc_files(dscs[0]):
             f = d / name
@@ -141,13 +149,14 @@ def pack(rows: list[dict], work: Path, name: str) -> None:
         "",
         f"## Included ({len(inc)} source packages)",
         "",
-        "| Source package | Version | Libraries in the AppImage |",
-        "|---|---|---|",
+        "| Source package | Source version | Bundled binary package(s) and version | Libraries in the AppImage |",
+        "|---|---|---|---|",
     ]
-    out += [f"| {r['source']} | {r['version']} | {', '.join(r['libraries'])} |" for r in inc]
+    out += [f"| {r['source']} | {r['source_version']} | {', '.join(r['binaries'])} {r['version']} | {', '.join(r['libraries'])} |"
+            for r in inc]
     out += ["", "### Files and SHA-256", ""]
     for r in inc:
-        out.append(f"{r['source']}_{no_epoch(r['version'])}/")
+        out.append(f"{r['source']}_{no_epoch(r['version'])}/  (source {r['source']} {r['source_version']})")
         out += [f"  {sha}  {n}  ({size} bytes)" for n, size, sha in r["files"]]
     out += ["", f"## Not included ({len(exc)} permissive source packages)", "",
             "Their licences (MIT, BSD, X11, Apache-2.0 and similar) do not require distributing source code.",
@@ -165,8 +174,14 @@ def pack(rows: list[dict], work: Path, name: str) -> None:
         dst.mkdir()
         for n, _, _ in r["files"]:
             (dst / n).hardlink_to(src / n)
-    (work / "summary.json").write_text(json.dumps({"included": [r["source"] for r in inc],
-                                                   "excluded": [r["source"] for r in exc]}, indent=1))
+    (work / "summary.json").write_text(json.dumps({
+        "included": {r["source"]: {"source_version": r["source_version"], "binary_version": r["version"]} for r in inc},
+        "excluded": {r["source"]: {"binary_version": r["version"], "licences": r["licences"],
+                                   "reason": r.get("decided", "copyright files in the AppImage name no copyleft licence")}
+                     for r in exc},
+        "version_differs": {r["source"]: [r["version"], r["source_version"]] for r in rows
+                            if r.get("source_version") and r["source_version"] != r["version"]},
+    }, indent=1))
     tar = ["tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "-C", str(root.parent),
            "-cf", "-", root.name]
     with open(work / name, "wb") as f:
