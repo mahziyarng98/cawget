@@ -157,11 +157,23 @@ struct Tracker {
     state: Arc<ServerState>,
     idx: usize,
     sent: u64,
+    /// Still counted in `now` (the connection has not delivered its last byte yet).
+    open: bool,
+}
+
+impl Tracker {
+    /// Stops counting this connection. Called before the last chunk is handed out, so that a client which
+    /// reacts to the end of the body (e.g. by starting the next download) never sees it as still open.
+    fn finish(&mut self) {
+        if std::mem::replace(&mut self.open, false) {
+            self.state.now.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
 }
 
 impl Drop for Tracker {
     fn drop(&mut self) {
-        self.state.now.fetch_sub(1, Ordering::SeqCst);
+        self.finish(); // aborted or cancelled transfers
         if let Some(r) = self.state.log.lock().unwrap().get_mut(self.idx) {
             r.bytes = self.sent;
         }
@@ -313,6 +325,7 @@ async fn serve(
         state: Arc::clone(&st),
         idx,
         sent: 0,
+        open: true,
     };
 
     let step: u64 = if bps > 0 { 16 * 1024 } else { 256 * 1024 };
@@ -328,6 +341,9 @@ async fn serve(
                 tokio::time::sleep(Duration::from_secs_f64(n as f64 / bps as f64)).await;
             }
             t.sent += n;
+            if left == n {
+                t.finish();
+            }
             Some((
                 Ok::<_, std::io::Error>(bytes::Bytes::from(data)),
                 (t, pos + n, left - n),
