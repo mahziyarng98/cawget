@@ -1,68 +1,158 @@
 # Installing Cawget
 
-Packages are attached to each release on GitHub. Check a download against the release's `SHA256SUMS`:
+Cawget is distributed as ready-made packages on the
+[Releases page](https://github.com/mahziyarng98/cawget/releases). Pick the one that fits your system:
+
+| Your system | Package | Section |
+|---|---|---|
+| Any 64-bit (x86_64) Linux | AppImage, no installation needed | [AppImage](#appimage-any-x86_64-linux-no-installation) |
+| Debian, Ubuntu, Linux Mint and other Debian-based systems | `.deb` | [Debian and Ubuntu](#debian-ubuntu-and-derivatives-deb) |
+| Fedora, openSUSE and other RPM-based systems | `.rpm` | [Fedora and openSUSE](#fedora-opensuse-and-other-rpm-systems-rpm) |
+| Arch Linux | AUR package: **coming soon** | [Arch Linux](#arch-linux-coming-soon) |
+
+In the commands below, replace `<version>` with the version you downloaded, for example `0.1.0`.
+
+## What has been tested
+
+- **Built and packaged on Ubuntu 22.04 (x86_64)** by the project's release workflow, which also runs the
+  automated test suite there.
+- **Untested:** installing and running the packages on any particular distribution, including Ubuntu 22.04
+  itself, other Ubuntu or Debian versions, Fedora, openSUSE and others. Reports are welcome in the
+  [issue tracker](https://github.com/mahziyarng98/cawget/issues).
+- Only 64-bit x86 (x86_64 / amd64) packages are provided. No packages for ARM or other architectures.
+
+## Check your download (recommended)
+
+Every release has a file called `SHA256SUMS` with a checksum for each package. Download it into the same folder
+as your package, open a terminal in that folder and run:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-## AppImage (any recent x86_64 distribution)
+The line for your file must end in `OK`. `--ignore-missing` skips the packages you did not download. If you see
+`FAILED`, delete the file and download it again.
 
-```sh
-chmod +x Cawget_*_amd64.AppImage
-./Cawget_*_amd64.AppImage
-```
+## AppImage (any x86_64 Linux, no installation)
 
-The AppImage carries its own GTK and WebKitGTK libraries. If it does not start because FUSE is missing, run it as
-`./Cawget_*_amd64.AppImage --appimage-extract-and-run`, or install your distribution's `libfuse2` package.
-The tray icon needs a desktop that shows StatusNotifier icons.
+An AppImage is a single file that runs without being installed; it installs nothing system-wide. It carries the
+GTK and WebKitGTK libraries it needs.
+
+1. Download `Cawget_<version>_amd64.AppImage` (and `SHA256SUMS`, see above).
+2. Make it executable and start it:
+
+   ```sh
+   chmod +x Cawget_<version>_amd64.AppImage
+   ./Cawget_<version>_amd64.AppImage
+   ```
+
+   You can also make it executable in your file manager (Properties, Permissions, "Allow executing file as
+   program") and then double-click it.
+
+- If it does not start and mentions FUSE, either install your distribution's `libfuse2` package or start it with
+  `./Cawget_<version>_amd64.AppImage --appimage-extract-and-run`.
+- To remove it, delete the file. Your download queue stays in `~/.local/share/cawget/` (see below).
+- The AppImage does not add an entry to the application menu by itself.
 
 ## Debian, Ubuntu and derivatives (.deb)
 
+1. Download `Cawget_<version>_amd64.deb` (and `SHA256SUMS`, see above).
+2. Open a terminal in the folder where the file is, then install it:
+
+   ```sh
+   sudo apt install ./Cawget_<version>_amd64.deb
+   ```
+
+   The leading `./` matters: it tells `apt` to install this file from the current folder. Without it, `apt`
+   would look for a package of that name in its online repositories and fail. `apt` also installs the libraries
+   the package needs (WebKitGTK 4.1, GTK 3, the tray library) from your distribution.
+
+3. Start Cawget from your application menu (it is listed as **Cawget**), or type `cawget` in a terminal.
+
+To remove it:
+
 ```sh
-sudo apt install ./Cawget_*_amd64.deb
+sudo apt remove cawget
 ```
 
-## Fedora, openSUSE and other RPM distributions (.rpm)
+This removes the program, not your download queue (see [Your data](#your-data)).
 
-```sh
-sudo dnf install ./Cawget-*.x86_64.rpm      # Fedora
-sudo zypper install ./Cawget-*.x86_64.rpm   # openSUSE
+The package needs `libwebkit2gtk-4.1-0`, which is not available on older releases such as Ubuntu 20.04 or
+Debian 11; on those, use the AppImage.
+
+## Fedora, openSUSE and other RPM systems (.rpm)
+
+1. Download `Cawget-<version>-1.x86_64.rpm` (and `SHA256SUMS`, see above).
+2. Install it from the folder where the file is (the leading `./` means "this file in the current folder"):
+
+   ```sh
+   sudo dnf install ./Cawget-<version>-1.x86_64.rpm      # Fedora
+   sudo zypper install ./Cawget-<version>-1.x86_64.rpm   # openSUSE
+   ```
+
+3. Start Cawget from your application menu, or type `cawget` in a terminal.
+
+To remove it: `sudo dnf remove cawget` (Fedora) or `sudo zypper remove cawget` (openSUSE).
+
+## Arch Linux (coming soon)
+
+> **Coming soon, not available yet.** An AUR package named `cawget-bin` is being prepared; until it is
+> published, `yay -S cawget-bin` or `makepkg` from the AUR will not find it. Use the AppImage in the meantime.
+> The package recipe is kept in this repository under `packaging/aur/`.
+
+Once it is published, it will be installed with an AUR helper such as `yay -S cawget-bin`, or manually with
+`git clone https://aur.archlinux.org/cawget-bin.git`, `cd cawget-bin` and `makepkg -si`.
+
+## Troubleshooting
+
+- **No tray icon:** the tray icon needs a desktop that shows StatusNotifier icons. Most desktops do; GNOME needs
+  an extension for it. Without one, Cawget works normally without a tray icon, and closing the window quits it.
+
+## Your data
+
+All packages store your download queue and settings in one file:
+
+```
+~/.local/share/cawget/cawget.db
 ```
 
-## Arch Linux (AUR)
+Removing a package does not delete it. Delete that folder yourself if you want to start fresh. It can contain
+logins you entered in plain text; see "Warning: credentials are stored in plain text" in the README.
 
-The `cawget-bin` package installs the release's .deb contents:
+## Where the packages install files
+
+| Item | Location |
+|---|---|
+| Program (command `cawget`) | `/usr/bin/cawget` |
+| Application menu entry | `/usr/share/applications/Cawget.desktop` |
+| Icons | `/usr/share/icons/hicolor/*/apps/cawget.png` |
+| AppStream metadata | `/usr/share/metainfo/io.github.mahziyarng98.cawget.metainfo.xml` |
+| Licences | `/usr/share/doc/cawget/` |
+
+## Command line tool
+
+The packages contain the desktop app only. The command line tool `cawget-cli` is built from source:
 
 ```sh
-git clone https://aur.archlinux.org/cawget-bin.git
-cd cawget-bin
-makepkg -si
+cargo build --release -p cawget-cli   # result: target/release/cawget-cli
 ```
 
-or with an AUR helper, e.g. `paru -S cawget-bin`. The PKGBUILD lives in `packaging/aur/` of this repository.
+Copy `target/release/cawget-cli` to a folder in your `PATH` (and `packaging/cawget-cli.1` to your man path) if
+you want it. It uses the same download queue as the app.
 
 ## Building from source
 
-Requirements and the full build steps are in the README ("Build"). In short:
+Requirements and the full build steps are in the README, section "Build". In short:
 
 ```sh
 cd gui
 npm ci
-npx tauri build          # target/release/bundle/: AppImage, .deb and .rpm
-cargo build --release -p cawget-cli   # the command line tool: target/release/cawget-cli
+npx tauri build          # results in target/release/bundle/: AppImage, .deb and .rpm
 ```
 
-The command line tool is not part of the packages; copy `target/release/cawget-cli` to a folder in your `PATH`
-(and `packaging/cawget-cli.1` to your man path) if you want it.
+## Planned, not available
 
-## Where things are installed
-
-| Item | Location |
-|---|---|
-| Program | `/usr/bin/cawget` |
-| Desktop entry | `/usr/share/applications/Cawget.desktop` |
-| Icons | `/usr/share/icons/hicolor/*/apps/cawget.png` |
-| AppStream metadata | `/usr/share/metainfo/io.github.mahziyarng98.cawget.metainfo.xml` |
-| Licences | `/usr/share/doc/cawget/` |
-| Your download queue | `~/.local/share/cawget/cawget.db` |
+- An APT repository (automatic updates through `apt`)
+- The AUR package `cawget-bin` (see above)
+- Flatpak and Snap packages
+- A browser extension that hands downloads to Cawget

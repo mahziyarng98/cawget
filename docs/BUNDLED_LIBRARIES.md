@@ -3,7 +3,7 @@
 The AppImage carries the desktop libraries the app needs at run time (GTK 3, WebKitGTK and their
 dependencies), copied from the system that builds it. Cawget's own code and the components listed in
 THIRD_PARTY_LICENSES.md are compiled into the `cawget` binary; the libraries below are separate shared
-libraries inside the AppImage, each under its own licence. The .deb, .rpm and AUR packages bundle none of
+libraries inside the AppImage, each under its own licence. The .deb and .rpm packages bundle none of
 them: they use the distribution's libraries.
 
 This list comes from a reference build (107 source packages, 191 shared libraries). Release builds run on

@@ -7,7 +7,20 @@ Cawget is an independent implementation. It uses no third-party proprietary code
 
 ![Cawget main window on a wide screen](docs/screenshots/wide.png)
 
-> **Status:** 0.1.0, the first public release. Expect rough edges; see [Coming soon](#coming-soon).
+> **Status:** 0.1.0, the first public release. Expect rough edges; see [Planned](#planned).
+
+## Install
+
+Download a package from the [Releases page](https://github.com/mahziyarng98/cawget/releases):
+
+- **AppImage** (any x86_64 Linux, no installation): `chmod +x Cawget_<version>_amd64.AppImage`, then run it.
+- **Debian / Ubuntu:** `sudo apt install ./Cawget_<version>_amd64.deb`, then start **Cawget** from the menu.
+- **Fedora / openSUSE:** `sudo dnf install ./Cawget-<version>-1.x86_64.rpm` (or `zypper install`).
+- **Arch Linux:** an AUR package is *coming soon*; use the AppImage for now.
+
+Packages are built and the automated tests run on Ubuntu 22.04 (x86_64); installing them on other distributions
+is untested so far. Step-by-step instructions (checksums, removing, where your data is):
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Features
 
@@ -22,7 +35,8 @@ Cawget is an independent implementation. It uses no third-party proprietary code
   `http://` proxy for `http://` downloads, and `none` to bypass it. Accepted but untested: proxies taken from the
   environment, `https://` downloads through a proxy, `https://` proxy URLs and `socks5://` proxies.
 - **Desktop app:** sortable and reorderable table, per-download progress window with a segment map, light and dark
-  themes, right-to-left layout, keyboard shortcuts (F1 lists them), system tray (needs a StatusNotifier host).
+  themes, right-to-left layout, keyboard shortcuts (F1 lists them), system tray (needs a desktop that shows
+  StatusNotifier icons; GNOME needs an extension, see [docs/INSTALL.md](docs/INSTALL.md#troubleshooting)).
 - **Any window size:** from 480x360 up to 4K, including half-screen tiles: the toolbar drops labels and then moves
   less-used buttons into a "…" (more actions) menu, the menus fold into one menu button, the categories become an
   icon rail (or a drawer) with a resizable splitter, low-priority columns hide and narrow windows get two-line rows.
@@ -33,9 +47,9 @@ Cawget is an independent implementation. It uses no third-party proprietary code
 |---|---|
 | ![Cawget in a half-screen tile](docs/screenshots/half-screen.png) | ![Cawget in a small window](docs/screenshots/compact.png) |
 
-## Coming soon
+## Planned
 
-These are visible in the app but disabled, or simply not there yet:
+Not available yet. Some of these are visible in the app but disabled (marked "Coming soon"):
 
 - Bulk add and page scanner
 - Import / export of download lists
@@ -45,14 +59,14 @@ These are visible in the app but disabled, or simply not there yet:
 - Taking over downloads from web browsers (extension)
 - Encrypted credential storage
 - Protocols other than HTTP and HTTPS (no FTP, torrent or metalink)
-- Packages in other formats (Flatpak, Snap)
+- More packages: the AUR package `cawget-bin`, Flatpak, Snap
 
 Known limit: a file that changes on the server *during* a run, without its size changing, is not detected
 (changes between runs are).
 
 ## Build
 
-Installing a release package (AppImage, .deb, .rpm, AUR) is described in [docs/INSTALL.md](docs/INSTALL.md).
+To install a release package instead (AppImage, .deb, .rpm), see [docs/INSTALL.md](docs/INSTALL.md).
 
 Requirements: Rust 1.90 or newer, a C compiler, and Node.js `^20.19.0 || ^22.12.0 || >=24.0.0` (what Vite 8, its
 Svelte plugin and Vitest accept together). For the desktop app also the Tauri Linux prerequisites
@@ -148,5 +162,5 @@ The LGPL and GPL libraries in the AppImage are unmodified builds from the distri
 (Ubuntu 22.04 for release builds). Their complete source is the corresponding source package:
 `apt-get source <package>` on Ubuntu 22.04, or https://launchpad.net/ubuntu/+source/<package>. The package
 names and versions of each release are in its attached `bundled-libraries.txt`. Upstream sources are linked in
-[docs/BUNDLED_LIBRARIES.md](docs/BUNDLED_LIBRARIES.md). The .deb, .rpm and AUR packages bundle no system
+[docs/BUNDLED_LIBRARIES.md](docs/BUNDLED_LIBRARIES.md). The .deb and .rpm packages bundle no system
 libraries.
