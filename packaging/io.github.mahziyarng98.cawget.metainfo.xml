@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- AppStream metadata. URLs and screenshot links assume the repository github.com/mahziyarng98/cawget. -->
+<!-- AppStream metadata. Screenshots are served from the main branch of github.com/mahziyarng98/cawget. -->
 <component type="desktop-application">
   <id>io.github.mahziyarng98.cawget</id>
   <metadata_license>CC0-1.0</metadata_license>

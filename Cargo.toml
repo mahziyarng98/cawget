@@ -7,6 +7,8 @@ default-members = ["crates/cawget-core", "crates/cawget-cli", "crates/cawget-tes
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/mahziyarng98/cawget"
+homepage = "https://github.com/mahziyarng98/cawget"
 authors = ["mahziyarng98 <289230375+mahziyarng98@users.noreply.github.com>"]
 rust-version = "1.90"
 

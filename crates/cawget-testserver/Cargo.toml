@@ -4,6 +4,8 @@ description = "In-process HTTP/HTTPS server with ranges, throttling and failure 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
 
 [dependencies]
