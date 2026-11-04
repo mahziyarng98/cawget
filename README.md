@@ -45,7 +45,7 @@ These are visible in the app but disabled, or simply not there yet:
 - Taking over downloads from web browsers (extension)
 - Encrypted credential storage
 - Protocols other than HTTP and HTTPS (no FTP, torrent or metalink)
-- Prebuilt packages other than the AppImage
+- Packages in other formats (Flatpak, Snap)
 
 Known limit: a file that changes on the server *during* a run, without its size changing, is not detected
 (changes between runs are).

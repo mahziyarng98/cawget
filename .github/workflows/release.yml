@@ -92,17 +92,23 @@ jobs:
             echo "Source: apt-get source <package> on Ubuntu 22.04, or https://launchpad.net/ubuntu/+source/<package>"
             echo
             find scan/squashfs-root/usr/lib -name '*.so*' -type f -printf '%f\n' | sort -u | while read -r lib; do
-              path=$(dpkg -S "/${lib}" 2>/dev/null | head -n1 || true)
+              # A glob: libraries live under /usr/lib/<multiarch>/ (an argument starting with "/" is an exact path).
+              path=$(dpkg -S "*/${lib}" 2>/dev/null | head -n1 || true)
               pkg=${path%%:*}
               if [ -n "${path}" ]; then
                 src=$(dpkg-query -W -f='${source:Package} ${Version}' "${pkg}" 2>/dev/null || true)
                 echo "${lib}  ${pkg}  (source: ${src})"
               else
                 echo "${lib}  (not from a Debian package)"
+                echo "::warning::bundled library ${lib} is not from a Debian package" >&2
               fi
             done
           } > out/bundled-libraries.txt
           cat out/bundled-libraries.txt
+          resolved=$(grep -c '(source: ' out/bundled-libraries.txt || true)
+          unresolved=$(grep -c 'not from a Debian package' out/bundled-libraries.txt || true)
+          echo "resolved: ${resolved}, unresolved: ${unresolved}"
+          test "${resolved}" -gt 0 || { echo "::error::no bundled library could be traced to a package"; exit 1; }
 
       - name: Checksums
         working-directory: out
