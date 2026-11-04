@@ -18,6 +18,7 @@
 *.pem
 *.key
 *.local.txt
+__pycache__/
 
 # editor / OS
 .idea/

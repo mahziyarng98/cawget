@@ -1,0 +1,49 @@
+name: Bundled library sources
+
+# Run by hand for a release: fetches the Ubuntu 22.04 source packages of the copyleft libraries bundled in that
+# release's AppImage (packaging/bundled-sources/<tag>.tsv), verifies them and uploads the archive as a workflow
+# artifact. The maintainer attaches it to the release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose list to use (packaging/bundled-sources/<tag>.tsv)
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+jobs:
+  sources:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable Ubuntu source repositories
+        run: |
+          grep -h '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null \
+            | grep -E 'ubuntu\.com|ubuntu/ ' | sed 's/^deb /deb-src /' | sort -u \
+            | sudo tee /etc/apt/sources.list.d/cawget-deb-src.list
+          sudo apt-get update
+
+      - name: Fetch, verify and pack the sources
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version="${TAG#v}"
+          python3 scripts/bundled_sources.py all "packaging/bundled-sources/${TAG}.tsv" work \
+            "cawget-${version}-bundled-sources.tar.zst"
+          sha256sum "work/cawget-${version}-bundled-sources.tar.zst" | tee work/archive.sha256
+          ls -la work/*.tar.zst
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundled-sources
+          path: |
+            work/*.tar.zst
+            work/archive.sha256
+            work/summary.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
