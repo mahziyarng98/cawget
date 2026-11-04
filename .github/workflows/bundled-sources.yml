@@ -20,11 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The Ubuntu archive entries are in /etc/apt/sources.list (on hosted runners as "deb mirror+file:...");
+      # third-party repositories in sources.list.d are left alone.
       - name: Enable Ubuntu source repositories
         run: |
-          grep -h '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null \
-            | grep -E 'ubuntu\.com|ubuntu/ ' | sed 's/^deb /deb-src /' | sort -u \
+          grep '^deb ' /etc/apt/sources.list | sed 's/^deb /deb-src /' | sort -u \
             | sudo tee /etc/apt/sources.list.d/cawget-deb-src.list
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          test -s /etc/apt/sources.list.d/cawget-deb-src.list || grep -q 'deb-src' /etc/apt/sources.list.d/ubuntu.sources \
+            || { echo "::error::no deb-src entries could be added"; exit 1; }
           sudo apt-get update
 
       - name: Fetch, verify and pack the sources
