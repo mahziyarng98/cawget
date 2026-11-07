@@ -4,7 +4,7 @@ members = ["crates/cawget-core", "crates/cawget-cli", "crates/cawget-testserver"
 default-members = ["crates/cawget-core", "crates/cawget-cli", "crates/cawget-testserver", "gui/src-tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/mahziyarng98/cawget"

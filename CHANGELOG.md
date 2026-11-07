@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-07
+
+### Upgrade note
+- The migration backup `cawget.db.pre-keyring-<timestamp>.bak` (next to the database, mode 0600) still contains
+  the old plaintext logins. Delete it once downloads work. A running Secret Service (GNOME Keyring, KWallet) is
+  required to save or use logins.
+
 ### Added
 - Credentials (download logins, proxy logins, cookies, custom headers) are stored in the system keyring
   (Secret Service: GNOME Keyring / KWallet), not in the SQLite database, which keeps only references. Without a

@@ -10,7 +10,7 @@ Cawget is distributed as ready-made packages on the
 | Fedora, openSUSE and other RPM-based systems | `.rpm` | [Fedora and openSUSE](#fedora-opensuse-and-other-rpm-systems-rpm) |
 | Arch Linux | AUR: **coming soon** (AUR registration is temporarily closed); for now `makepkg` or the AppImage | [Arch Linux](#arch-linux) |
 
-In the commands below, replace `<version>` with the version you downloaded, for example `0.1.0`.
+In the commands below, replace `<version>` with the version you downloaded, for example `0.1.1`.
 
 ## What has been tested
 
@@ -105,8 +105,8 @@ Flatpak build. You need Flatpak installed and the Flathub remote added (the bund
 Flathub). It was built and tested on Arch Linux (Hyprland).
 
 ```sh
-sha256sum -c cawget-0.1.0-x86_64.flatpak.sha256     # run in the folder with both downloaded files
-flatpak install --user cawget-0.1.0-x86_64.flatpak
+sha256sum -c cawget-0.1.1-x86_64.flatpak.sha256     # run in the folder with both downloaded files
+flatpak install --user cawget-0.1.1-x86_64.flatpak
 ```
 
 Start **Cawget** from your application menu. To remove it:

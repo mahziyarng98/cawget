@@ -92,6 +92,18 @@
     <content_attribute id="money-advertising">none</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.1.1" date="2026-11-07">
+      <description>
+        <p>Logins are now stored in the system keyring.</p>
+        <ul>
+          <li>Download logins, proxy logins, cookies and custom headers are kept in the system keyring (Secret Service, for example GNOME Keyring or KWallet) instead of the database. A running keyring is required to save logins; there is no plaintext fallback.</li>
+          <li>On the first start, existing plaintext logins are moved to the keyring. A backup of the old database, which still contains them, is written next to it first.</li>
+          <li>Downloads whose login cannot be read wait for the keyring and start once it is available.</li>
+          <li>Addresses of the form user:password@host now authenticate every request.</li>
+          <li>Passwords are no longer shown in command line output, settings or error messages.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-04">
       <description>
         <p>First public release.</p>

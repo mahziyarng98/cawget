@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "cawget"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cawget-core",
  "dirs 6.0.0",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "cawget-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cawget-core",
  "cawget-testserver",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "cawget-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "cawget-testserver"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "axum-server",
