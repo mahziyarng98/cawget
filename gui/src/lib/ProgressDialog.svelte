@@ -53,7 +53,7 @@
     <div class="tab-panel" role="tabpanel" id="panel-status" aria-labelledby="tab-status">
       <dl class="props compact">
         <dt>Address</dt><dd class="selectable"><bdi>{job.url}</bdi></dd>
-        <dt>Status</dt><dd class:error-text={job.state === "failed"}>{statusText(job, Date.now() / 1000)}{job.error ? ` — ${job.error}` : ""}</dd>
+        <dt>Status</dt><dd class:error-text={job.state === "failed"} class:selectable={!!job.error}>{statusText(job, Date.now() / 1000)}{job.error ? ` — ${job.error}` : ""}</dd>
         <dt>File size</dt><dd><bdi>{job.size != null ? fmtBytes(job.size) : "unknown"}</bdi></dd>
         <dt>Downloaded</dt><dd><bdi>{fmtBytes(job.done)}{pct != null ? ` (${pct.toFixed(2)}%)` : ""}</bdi></dd>
         <dt>Speed</dt><dd><bdi>{job.state === "active" ? `${fmtBytes(job.speed)}/s` : "—"}</bdi></dd>
