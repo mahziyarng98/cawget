@@ -96,8 +96,8 @@ impl SecretStore for KeyringSecretStore {
 }
 
 /// In-memory mock for tests. Can be made unavailable, or made to fail / corrupt
-/// reads, to exercise the error paths.
-#[derive(Debug, Default)]
+/// reads, to exercise the error paths. Its `Debug` never shows the secrets.
+#[derive(Default)]
 pub struct MemorySecretStore {
     available: AtomicBool,
     /// When true, `get` returns a changed value the first time it is called for
@@ -108,14 +108,27 @@ pub struct MemorySecretStore {
     secrets: Mutex<HashMap<String, String>>,
 }
 
+impl std::fmt::Debug for MemorySecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys: Vec<String> = self
+            .secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        f.debug_struct("MemorySecretStore")
+            .field("available", &self.available.load(Ordering::Relaxed))
+            .field("keys", &keys)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MemorySecretStore {
     pub fn new() -> Self {
-        Self {
-            available: AtomicBool::new(true),
-            corrupt_once: AtomicBool::new(false),
-            fail_puts: AtomicBool::new(false),
-            secrets: Mutex::new(HashMap::new()),
-        }
+        let s = Self::default();
+        s.available.store(true, Ordering::Relaxed);
+        s
     }
 
     /// A store that is present but refuses every operation (like a keyring
@@ -187,7 +200,7 @@ impl SecretStore for MemorySecretStore {
 
 /// Everything secret about one queued job, stored as a JSON blob in the
 /// keyring under the job's reference.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobSecret {
     /// The address as entered, including any `user:password@` userinfo.
     pub url: String,
@@ -217,16 +230,18 @@ pub fn url_has_userinfo(url: &str) -> bool {
 /// (no normalization, no added trailing slash). Returns the URL unchanged when it
 /// has no userinfo.
 pub fn strip_url_userinfo(url: &str) -> Result<String> {
-    let u = reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {url}: {e}")))?;
+    let shown = crate::redact::mask_url(url);
+    let u =
+        reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {shown}: {e}")))?;
     if u.username().is_empty() {
         return Ok(url.to_string());
     }
     let Some(scheme_end) = url.find("://") else {
-        return Err(Error::invalid(format!("bad URL {url}")));
+        return Err(Error::invalid(format!("bad URL {shown}")));
     };
     let after_scheme = &url[scheme_end + 3..];
     let Some(at) = after_scheme.find('@') else {
-        return Err(Error::invalid(format!("bad URL {url}")));
+        return Err(Error::invalid(format!("bad URL {shown}")));
     };
     Ok(format!(
         "{}{}",

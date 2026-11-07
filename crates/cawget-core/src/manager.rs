@@ -50,7 +50,7 @@ pub struct JobView {
 }
 
 /// What to add to the queue.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AddRequest {
     pub url: String,
     /// Exact output file (takes precedence over `dir`).
@@ -65,6 +65,25 @@ pub struct AddRequest {
     /// Unix time to start at (0 = now).
     pub not_before: i64,
     pub paused: bool,
+}
+
+impl std::fmt::Debug for AddRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("AddRequest")
+            .field("url", &mask_url(&self.url))
+            .field("output", &self.output)
+            .field("dir", &self.dir)
+            .field("segments", &self.segments)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("user_agent", &self.user_agent)
+            .field("sha256", &self.sha256)
+            .field("not_before", &self.not_before)
+            .field("paused", &self.paused)
+            .finish()
+    }
 }
 
 /// What a probe of an address found out (for the "file details" step before adding a download).
@@ -315,15 +334,21 @@ impl Manager {
 
     fn validate(req: &AddRequest) -> Result<()> {
         let lower = req.url.to_ascii_lowercase();
+        let shown = crate::redact::mask_url(&req.url);
         if !(lower.starts_with("http://") || lower.starts_with("https://")) {
             return Err(Error::invalid(format!(
-                "only http:// and https:// URLs are supported: {}",
-                req.url
+                "only http:// and https:// URLs are supported: {shown}"
             )));
+        }
+        // An address that does not parse is refused up front: its userinfo could not be
+        // recognised, so it would otherwise end up in the database in clear.
+        if let Err(e) = reqwest::Url::parse(&req.url) {
+            return Err(Error::invalid(format!("bad URL {shown}: {e}")));
         }
         if let Some(h) = req.headers.iter().find(|h| http::parse_header(h).is_none()) {
             return Err(Error::invalid(format!(
-                "bad header '{h}' (expected 'Name: value')"
+                "bad header '{}' (expected 'Name: value')",
+                crate::redact::redact_header(h)
             )));
         }
         Ok(())
@@ -756,6 +781,7 @@ impl Manager {
                     });
                 }
                 Outcome::Failed(error) => {
+                    let error = crate::redact::redact_text(&error);
                     if inner.store.job_state(id).ok().flatten().is_some() {
                         let _ = inner.store.set_state(id, State::Failed, Some(&error));
                     }

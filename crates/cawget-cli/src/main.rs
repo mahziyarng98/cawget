@@ -1,5 +1,6 @@
 //! `cawget-cli`: command line front end of the download manager (engine: cawget-core).
 
+use cawget_core::redact::{mask_url, redact_text};
 use cawget_core::util::{fmt_bytes, fmt_eta, parse_size, parse_when, unix_now};
 use cawget_core::{AddRequest, Event, JobView, Manager, RunOptions, SETTINGS, State};
 use clap::{Args, Parser, Subcommand};
@@ -150,7 +151,7 @@ fn default_db() -> PathBuf {
 }
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
-    eprintln!("cawget-cli: {msg}");
+    eprintln!("cawget-cli: {}", redact_text(&msg.to_string()));
     ExitCode::from(1)
 }
 
@@ -211,6 +212,7 @@ impl Ui {
         if self.quiet {
             return;
         }
+        let s = redact_text(&s);
         if self.tty {
             let _ = self.mp.println(s);
         } else {
@@ -384,7 +386,7 @@ fn print_list(views: &[JobView]) {
             }
         }
         if let Some(e) = &v.job.error {
-            line.push_str(&format!("  [{e}]"));
+            line.push_str(&format!("  [{}]", redact_text(e)));
         }
         println!("{line}");
     }
@@ -396,7 +398,7 @@ fn print_status(m: &Manager, id: i64) -> Result<(), String> {
     println!(
         "id:        {}\nurl:       {}\nstate:     {}",
         j.id,
-        j.url,
+        mask_url(&j.url),
         j.state.as_str()
     );
     println!(
@@ -408,7 +410,7 @@ fn print_status(m: &Manager, id: i64) -> Result<(), String> {
         }
     );
     if let Some(e) = &j.error {
-        println!("error:     {e}");
+        println!("error:     {}", redact_text(e));
     }
     if let Some(s) = j.size {
         println!("size:      {} ({s} bytes)", fmt_bytes(s as f64));
@@ -453,7 +455,7 @@ async fn main() -> ExitCode {
     if let Some(r) = m.keyring_migration()
         && !matches!(r, cawget_core::secrets::KeyringMigration::NotNeeded)
     {
-        eprintln!("cawget-cli: {}", r.summary());
+        eprintln!("cawget-cli: {}", redact_text(&r.summary()));
     }
     match cli.command {
         Cmd::Add(a) => {
@@ -464,7 +466,7 @@ async fn main() -> ExitCode {
             for r in reqs {
                 let url = r.url.clone();
                 match m.add(r) {
-                    Ok(id) => println!("queued [{id}] {url}"),
+                    Ok(id) => println!("queued [{id}] {}", mask_url(&url)),
                     Err(e) => return fail(e),
                 }
             }
@@ -483,7 +485,7 @@ async fn main() -> ExitCode {
                 Ok(id) => id,
                 Err(e) => return fail(e),
             };
-            println!("queued [{id}] {url}");
+            println!("queued [{id}] {}", mask_url(&url));
             run_engine(
                 m,
                 RunOptions {
@@ -554,7 +556,11 @@ fn finish(r: cawget_core::Result<()>, id: i64, what: &str) -> ExitCode {
 }
 
 fn config(m: &Manager, key: Option<String>, value: Option<String>, unset: bool) -> ExitCode {
-    let stored = m.store().all_settings().unwrap_or_default();
+    let mut stored = m.store().all_settings().unwrap_or_default();
+    // The proxy is shown as the manager displays it: a saved login only as `***@`.
+    if stored.contains_key("proxy") {
+        stored.insert("proxy".into(), m.settings().proxy);
+    }
     match (key, value) {
         (None, _) => {
             for s in SETTINGS {
@@ -593,15 +599,15 @@ fn config(m: &Manager, key: Option<String>, value: Option<String>, unset: bool) 
                     println!(
                         "{k} = {}",
                         if value.is_empty() {
-                            "(default)"
+                            "(default)".to_string()
                         } else {
-                            &value
+                            mask_url(&value)
                         }
                     );
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("cawget-cli: {e}");
+                    eprintln!("cawget-cli: {}", redact_text(&e.to_string()));
                     ExitCode::from(2)
                 }
             }

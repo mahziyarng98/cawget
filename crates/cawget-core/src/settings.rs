@@ -97,8 +97,8 @@ pub const SETTINGS: &[SettingInfo] = &[
     },
 ];
 
-/// Parsed settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Parsed settings. `Debug` masks the proxy login.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub segments: u32,
     pub max_jobs: u32,
@@ -115,6 +115,25 @@ pub struct Settings {
     pub category_dirs: BTreeMap<String, PathBuf>,
     /// "" = system proxy (environment variables), "none" = direct connections, otherwise a proxy URL.
     pub proxy: String,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("segments", &self.segments)
+            .field("max_jobs", &self.max_jobs)
+            .field("min_segment_size", &self.min_segment_size)
+            .field("max_speed", &self.max_speed)
+            .field("retries", &self.retries)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("cacert", &self.cacert)
+            .field("user_agent", &self.user_agent)
+            .field("download_dir", &self.download_dir)
+            .field("window", &self.window)
+            .field("category_dirs", &self.category_dirs)
+            .field("proxy", &crate::redact::mask_url(&self.proxy))
+            .finish()
+    }
 }
 
 impl Default for Settings {

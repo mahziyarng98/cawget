@@ -44,7 +44,8 @@ impl State {
 }
 
 /// A download job as stored in the database. `None` means "not set / not known yet".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `Debug` hides credentials (URL userinfo, header values, cookie).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
     pub url: String,
@@ -75,7 +76,7 @@ pub struct Job {
 }
 
 /// A job row that still carries plaintext credentials in the database.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PlaintextJob {
     pub id: i64,
     pub url: String,
@@ -83,8 +84,64 @@ pub struct PlaintextJob {
     pub cookie: Option<String>,
 }
 
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("url", &mask_url(&self.url))
+            .field("out_path", &self.out_path)
+            .field("state", &self.state)
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("user_agent", &self.user_agent)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("secret_ref", &self.secret_ref)
+            .field("sha256", &self.sha256)
+            .field("etag", &self.etag)
+            .field("last_modified", &self.last_modified)
+            .field("error", &self.error)
+            .field("size", &self.size)
+            .field("accept_ranges", &self.accept_ranges)
+            .field("segments", &self.segments)
+            .field("created", &self.created)
+            .field("not_before", &self.not_before)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for PlaintextJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("PlaintextJob")
+            .field("id", &self.id)
+            .field("url", &mask_url(&self.url))
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for NewJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("NewJob")
+            .field("url", &mask_url(&self.url))
+            .field("out_path", &self.out_path)
+            .field("paused", &self.paused)
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("user_agent", &self.user_agent)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("sha256", &self.sha256)
+            .field("segments", &self.segments)
+            .field("not_before", &self.not_before)
+            .finish()
+    }
+}
+
 /// What the caller supplies when creating a job.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct NewJob {
     pub url: String,
     pub out_path: String,

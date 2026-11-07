@@ -70,6 +70,7 @@ pub struct JobEnv {
 
 impl JobEnv {
     fn info(&self, id: i64, message: String) {
+        let message = crate::redact::redact_text(&message);
         let _ = self.events.send(Event::Info { id, message });
     }
 }
