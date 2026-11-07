@@ -429,6 +429,44 @@ pub fn strip_url_userinfo(url: &str) -> Result<String> {
     ))
 }
 
+/// Splits the userinfo off a URL: the URL without it, and an `Authorization: Basic`
+/// header line built from the (percent-decoded) user name and password. URLs without
+/// userinfo come back unchanged with `None`.
+pub fn userinfo_to_basic_auth(url: &str) -> Result<(String, Option<String>)> {
+    let shown = crate::redact::mask_url(url);
+    let u =
+        reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {shown}: {e}")))?;
+    if u.username().is_empty() && u.password().is_none() {
+        return Ok((url.to_string(), None));
+    }
+    let decode = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    let header =
+        crate::http::basic_auth_header(&decode(u.username()), &decode(u.password().unwrap_or("")));
+    Ok((strip_url_userinfo(url)?, Some(header)))
+}
+
+/// Moves URL userinfo into an `Authorization` header (unless the job already has one),
+/// so that it is sent with the probe *and* every segment request, and so that the URL
+/// used for requests, redirects, logs and errors carries no password.
+pub fn userinfo_into_headers(url: &mut String, headers: &mut Vec<String>) -> Result<()> {
+    let (plain, auth) = userinfo_to_basic_auth(url)?;
+    if let Some(auth) = auth {
+        let has_auth = headers.iter().any(|h| {
+            h.split_once(':')
+                .is_some_and(|(n, _)| n.trim().eq_ignore_ascii_case("authorization"))
+        });
+        if !has_auth {
+            headers.push(auth);
+        }
+        *url = plain;
+    }
+    Ok(())
+}
+
 /// Whether a job row still carries plaintext credentials in the database.
 /// Used by the migration and by the "no keyring" policy checks.
 pub fn job_has_plaintext(url: &str, headers: &[String], cookie: Option<&str>) -> bool {

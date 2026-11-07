@@ -357,10 +357,19 @@ impl Manager {
     /// Asks the server about an address without adding a job: size, range support and the file name.
     /// Uses the same client, headers and settings as a real download.
     pub async fn probe_url(&self, req: &AddRequest) -> std::result::Result<ProbeInfo, String> {
-        Self::validate(req).map_err(|e| e.to_string())?;
-        let s = self.settings();
-        let client = self.client_for(&s)?;
-        let job = Job {
+        use crate::redact::redact_text;
+        Self::validate(req).map_err(|e| redact_text(&e.to_string()))?;
+        // The proxy login may need the keyring: read it off the async workers.
+        let inner = Arc::clone(&self.inner);
+        let s = tokio::task::spawn_blocking(move || {
+            let mut s = Settings::load(&inner.store);
+            Self::resolve_proxy(&inner, &mut s).map(|()| s)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| redact_text(&e.to_string()))?;
+        let client = self.client_for(&s).map_err(|e| redact_text(&e))?;
+        let mut job = Job {
             id: 0,
             url: req.url.clone(),
             out_path: String::new(),
@@ -380,9 +389,11 @@ impl Manager {
             created: 0,
             not_before: 0,
         };
+        secrets::userinfo_into_headers(&mut job.url, &mut job.headers)
+            .map_err(|e| redact_text(&e.to_string()))?;
         let p = http::probe(&client, &job, &s.user_agent)
             .await
-            .map_err(|e| e.message().to_string())?;
+            .map_err(|e| redact_text(e.message()))?;
         let file_name = p
             .content_disposition
             .as_deref()
