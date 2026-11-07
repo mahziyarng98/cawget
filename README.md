@@ -38,6 +38,8 @@ far. Step-by-step instructions (checksums, removing, where your data is): [docs/
 - **Network options:** proxy setting, custom CA file, custom headers, referer and cookies. Tested end to end: an
   `http://` proxy for `http://` downloads, and `none` to bypass it. Accepted but untested: proxies taken from the
   environment, `https://` downloads through a proxy, `https://` proxy URLs and `socks5://` proxies.
+- **Keyring credentials:** logins for downloads and proxies are stored in the system keyring (GNOME Keyring/
+  KWallet via Secret Service), not in the database; see [Credentials and the system keyring](#credentials-and-the-system-keyring).
 - **Desktop app:** sortable and reorderable table, per-download progress window with a segment map, light and dark
   themes, right-to-left layout, keyboard shortcuts (F1 lists them), system tray (needs a desktop that shows
   StatusNotifier icons; GNOME needs an extension, see [docs/INSTALL.md](docs/INSTALL.md#troubleshooting)).
@@ -61,7 +63,6 @@ Not available yet. Some of these are visible in the app but disabled (marked "Co
 - Saved per-site logins
 - Start on login, clipboard watching
 - Taking over downloads from web browsers (extension)
-- Encrypted credential storage
 - Protocols other than HTTP and HTTPS (no FTP, torrent or metalink)
 - More packages: the AUR package `cawget-bin`, Flatpak, Snap
 
@@ -126,17 +127,31 @@ The old file is never modified, moved or deleted. If another process is still us
 that run and copied on a later start. The variables `JACKDAW_DB` and `SEGGET_DB` still work as deprecated aliases
 of `CAWGET_DB` (in that order of precedence); a note is printed when one is used.
 
-## Warning: credentials are stored in plain text
+## Credentials and the system keyring
 
 Logins entered for a download, proxy URLs of the form `http://user:password@host:port`, `--cookie` and `-H`
-values are stored **unencrypted** in the database above. Anyone who can read that file can read them.
+values are stored in your **system keyring** (GNOME Keyring or KWallet, via the Secret Service), **never** in the
+queue database. The database keeps only a reference per login; when a download starts, its credentials are read
+back from the keyring (which must be unlocked).
+
+If no keyring is available (no Secret Service daemon is running, or a sandbox without permission), Cawget does
+**not** fall back to plaintext: saving logins fails with a clear error and downloads that need them do not start.
+Databases from older versions that still contain plaintext are migrated on the first start after the upgrade:
+
+1. the database is backed up next to it (`cawget.db.pre-keyring-<timestamp>.bak`, mode `0600`; it contains the
+   old plaintext — delete it once you trust the keyring copy);
+2. each login is written to the keyring and verified by reading it back;
+3. only after verification is the plaintext cleared from the database.
+
+If the keyring is unavailable, nothing is migrated, the plaintext stays, a warning is logged, and the migration is
+retried on the next start. The migration is idempotent and safe to interrupt.
 
 Directories Cawget creates for the database are `0700`, and the database files it creates (`cawget.db`, its
 `-wal`/`-shm` files, its `.lock` file, and a copy made by the migration) are `0600`, so other local users cannot
 read them. Cawget does not change the permissions of files or directories that already exist, for example a
 database you point it at with `CAWGET_DB`/`--db`, or the legacy databases it copies from; check those yourself.
-Root, and anything running as your user, can still read the database. Do not share it or back it up to untrusted
-places, and prefer short-lived credentials. Encrypted storage is on the Coming soon list.
+Root, and anything running as your user, can still read the keyring while your session is unlocked. Do not share
+the database or back it up to untrusted places, and prefer short-lived credentials.
 
 ## Layout
 

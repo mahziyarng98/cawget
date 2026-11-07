@@ -44,7 +44,11 @@ Start later: +10m, +2h, HH:MM, "YYYY\-MM\-DD HH:MM", @epoch.
 .SH FILES
 .I $XDG_DATA_HOME/cawget/cawget.db
 (default ~/.local/share/cawget/cawget.db; override with --db or CAWGET_DB). The directory is created 0700
-and the database 0600, because it can hold credentials in plain text.
+and the database 0600. Credentials (logins, proxy logins, cookies, custom headers) are stored in the system
+keyring (Secret Service), not in the database, which keeps only a reference. On first use after an upgrade,
+plaintext credentials from an older database are migrated to the keyring: the database is backed up next to it
+(cawget.db.pre-keyring-<timestamp>.bak), each login is written and verified in the keyring, then the plaintext is
+cleared; without a keyring the migration is postponed and the plaintext stays.
 On first use, if it does not exist, the first legacy database found is copied there, in this order:
 ~/.local/share/jackdaw/jackdaw.db, then
 ~/.local/share/segget/segget.db.

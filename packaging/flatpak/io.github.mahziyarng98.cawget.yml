@@ -47,6 +47,10 @@ finish-args:
   # (gui/src-tauri/src/main.rs). UNVERIFIED: confirm the exact talk/own
   # names with `flatpak run --log-session-bus`.
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Credentials are stored in the system keyring (Secret Service: GNOME Keyring /
+  # KWallet) via the zbus-secret-service store of the keyring crate; the sandbox
+  # must be allowed to talk to the Secret Service daemon on the session bus.
+  - --talk-name=org.freedesktop.secrets
 modules:
   # The tray icon loads libayatana-appindicator at runtime through the
   # libappindicator crate (Cargo.lock: tray-icon -> libappindicator ->

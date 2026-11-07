@@ -188,5 +188,9 @@ pipeline also runs appstream validation and treats warnings as fatal
 - The `gui` module leaves its frontend copy at
   `${FLATPAK_DEST}/lib/cawget/gui-dist` inside the app (it is also embedded in
   the binary); acceptable for phase A, can be cleaned later.
-- The app stores credentials in plaintext in its private DB (audit §4); no
-  keyring permission is requested on purpose.
+- The app stores credentials in the system keyring (Secret Service). The
+  manifest requests `--talk-name=org.freedesktop.secrets`; without it the
+  sandbox cannot use the keyring and Cawget refuses to store new logins.
+- The plaintext→keyring migration runs on the first start after the upgrade and
+  backs the old database up next to it. See the "Credentials" section of
+  README.md.

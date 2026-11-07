@@ -156,8 +156,9 @@ All packages store your download queue and settings in one file:
 ~/.local/share/cawget/cawget.db
 ```
 
-Removing a package does not delete it. Delete that folder yourself if you want to start fresh. It can contain
-logins you entered in plain text; see "Warning: credentials are stored in plain text" in the README.
+Removing a package does not delete it. Delete that folder yourself if you want to start fresh. It contains only
+references to credentials: logins are kept in your system keyring (GNOME Keyring / KWallet). See "Credentials and
+the system keyring" in the README, including how existing plaintext databases are migrated (with a backup).
 
 ## Where the packages install files
 
