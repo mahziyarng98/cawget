@@ -36,6 +36,7 @@ pub mod job;
 pub mod limiter;
 pub mod manager;
 pub mod paths;
+pub mod secrets;
 pub mod segment;
 pub mod settings;
 pub mod store;
