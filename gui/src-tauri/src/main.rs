@@ -437,6 +437,23 @@ fn pause_all(engine: &Engine) {
     }
 }
 
+/// Where the tray icon PNG is written on Linux, when the default would not work.
+///
+/// The tray library writes the icon to `$XDG_RUNTIME_DIR/tray-icon` and hands that file path to the tray host.
+/// Inside a Flatpak, `$XDG_RUNTIME_DIR` is private to the sandbox, so the host (the panel) cannot read the file and
+/// shows a missing-icon placeholder. Flatpak shares `$XDG_RUNTIME_DIR/app/$FLATPAK_ID` with the host at the same
+/// path, so the icon goes there. Outside Flatpak this returns `None` and the default stays.
+fn tray_icon_dir(
+    flatpak_id: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let id = flatpak_id.filter(|v| !v.is_empty())?;
+    let runtime = PathBuf::from(runtime_dir.filter(|v| !v.is_empty())?);
+    runtime
+        .is_absolute()
+        .then(|| runtime.join("app").join(id).join("tray-icon"))
+}
+
 fn build_tray(app: &tauri::App, engine: Engine) -> tauri::Result<()> {
     let name = app.package_info().name.clone();
     let show = MenuItem::with_id(app, "show", format!("Show {name}"), true, None::<&str>)?;
@@ -460,6 +477,12 @@ fn build_tray(app: &tauri::App, engine: Engine) -> tauri::Result<()> {
         .show_menu_on_left_click(false);
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
+    }
+    if let Some(dir) = tray_icon_dir(
+        std::env::var_os("FLATPAK_ID"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    ) {
+        tray = tray.temp_dir_path(dir);
     }
     tray.on_menu_event(move |app, ev| match ev.id().as_ref() {
         "show" => show_main(app),
@@ -734,7 +757,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_window_size;
+    use super::{parse_window_size, tray_icon_dir};
+    use std::path::PathBuf;
+
+    #[test]
+    fn tray_icon_dir_is_host_visible_only_in_flatpak() {
+        let id = Some("io.github.mahziyarng98.cawget".into());
+        let run = Some("/run/user/1000".into());
+        assert_eq!(
+            tray_icon_dir(id.clone(), run.clone()),
+            Some(PathBuf::from(
+                "/run/user/1000/app/io.github.mahziyarng98.cawget/tray-icon"
+            ))
+        );
+        // Not in a Flatpak (or nothing usable to build on): keep the tray library's default.
+        assert_eq!(tray_icon_dir(None, run.clone()), None);
+        assert_eq!(tray_icon_dir(Some("".into()), run), None);
+        assert_eq!(tray_icon_dir(id.clone(), None), None);
+        assert_eq!(tray_icon_dir(id.clone(), Some("".into())), None);
+        assert_eq!(tray_icon_dir(id, Some("relative".into())), None);
+    }
 
     #[test]
     fn stored_window_sizes_are_validated() {
