@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Flatpak: the tray icon showed as a missing-icon placeholder because its image was written inside the sandbox's
+  private runtime directory; it is now written to `$XDG_RUNTIME_DIR/app/<app id>`, which the panel can read.
+
 ## [0.1.1] - 2026-11-07
 
 ### Upgrade note
