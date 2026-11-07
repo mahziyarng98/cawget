@@ -660,7 +660,7 @@
 {:else if dialog?.kind === "scheduler" && settings}
   <SchedulerDialog selected={sel} {jobs} {settings} onchange={refreshSettings} onerror={(m) => toast("err", m)} onclose={() => (dialog = null)} />
 {:else if dialog?.kind === "about"}
-  <AboutDialog {logo} dbPath={info?.db_path ?? ""} migratedFrom={info?.migrated_from ?? null} migrationDeferred={info?.migration_deferred ?? null} onclose={() => (dialog = null)} />
+  <AboutDialog {logo} dbPath={info?.db_path ?? ""} migratedFrom={info?.migrated_from ?? null} migrationDeferred={info?.migration_deferred ?? null} credentials={info?.credentials ?? null} onclose={() => (dialog = null)} />
 {:else if dialog?.kind === "keys"}
   <ShortcutsDialog onclose={() => (dialog = null)} />
 {:else if !dialog && completeJob}

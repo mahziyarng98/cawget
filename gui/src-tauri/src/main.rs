@@ -28,6 +28,8 @@ struct AppState {
     db_path: PathBuf,
     /// What happened to the database of the old location at start (shown in About).
     migration: Migration,
+    /// What the plaintext→keyring migration did at start (shown in About).
+    keyring_migration: Option<cawget_core::secrets::KeyringMigration>,
     /// Set if the scheduler could not start (for example another instance holds the queue).
     engine_error: Arc<Mutex<Option<String>>>,
 }
@@ -70,6 +72,8 @@ struct AppInfo {
     migrated_from: Option<String>,
     /// Set when the old queue was in use and is used in place for this run.
     migration_deferred: Option<String>,
+    /// Summary of the plaintext→keyring credential migration.
+    credentials: Option<String>,
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -513,6 +517,10 @@ fn app_info(state: State<AppState>) -> AppInfo {
             Migration::Deferred { old } => Some(old.to_string_lossy().into_owned()),
             _ => None,
         },
+        credentials: state
+            .keyring_migration
+            .as_ref()
+            .map(cawget_core::secrets::KeyringMigration::summary),
     }
 }
 
@@ -549,6 +557,12 @@ fn main() {
         eprintln!("{product}: cannot open database {}: {e}", db.display());
         std::process::exit(1);
     });
+    let keyring_migration = engine.keyring_migration();
+    if let Some(r) = &keyring_migration
+        && !matches!(r, cawget_core::secrets::KeyringMigration::NotNeeded)
+    {
+        eprintln!("{product}: {}", r.summary());
+    }
     let shutdown = CancellationToken::new();
     let engine_error = Arc::new(Mutex::new(None));
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -560,6 +574,7 @@ fn main() {
             engine: engine.clone(),
             db_path: db,
             migration,
+            keyring_migration,
             engine_error: Arc::clone(&engine_error),
         })
         .setup({

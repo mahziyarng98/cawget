@@ -28,6 +28,7 @@ bytes = "1"
 sha2 = "0.11"
 dirs = "6"
 base64 = "0.22"
+keyring = "4.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

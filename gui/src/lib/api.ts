@@ -70,6 +70,8 @@ export interface AppInfo {
   migrated_from: string | null;
   /** Old database in use by another process; used in place for this run. */
   migration_deferred: string | null;
+  /** Summary of the plaintext→keyring credential migration. */
+  credentials: string | null;
 }
 
 export interface ProbeInfo {

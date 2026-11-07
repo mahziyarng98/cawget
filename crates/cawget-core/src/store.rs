@@ -56,6 +56,10 @@ pub struct Job {
     /// Extra request headers, `Name: value`.
     pub headers: Vec<String>,
     pub cookie: Option<String>,
+    /// Keyring reference of this job's credential secret (empty = none). Credentials
+    /// themselves never live in the database.
+    #[serde(skip)]
+    pub secret_ref: String,
     /// Expected SHA-256 (hex).
     pub sha256: Option<String>,
     pub etag: Option<String>,
@@ -68,6 +72,15 @@ pub struct Job {
     pub created: i64,
     /// Unix time before which the job must not start (0 = immediately).
     pub not_before: i64,
+}
+
+/// A job row that still carries plaintext credentials in the database.
+#[derive(Debug, Clone)]
+pub struct PlaintextJob {
+    pub id: i64,
+    pub url: String,
+    pub headers: Vec<String>,
+    pub cookie: Option<String>,
 }
 
 /// What the caller supplies when creating a job.
@@ -95,7 +108,8 @@ CREATE TABLE IF NOT EXISTS jobs(
   etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT -1,
   accept_ranges INTEGER NOT NULL DEFAULT 0, nseg INTEGER NOT NULL DEFAULT 0,
-  created INTEGER NOT NULL DEFAULT 0, not_before INTEGER NOT NULL DEFAULT 0);
+  created INTEGER NOT NULL DEFAULT 0, not_before INTEGER NOT NULL DEFAULT 0,
+  secret_ref TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS segments(
   job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, idx INTEGER NOT NULL,
   start INTEGER NOT NULL, end INTEGER NOT NULL, done INTEGER NOT NULL,
@@ -104,7 +118,7 @@ CREATE TABLE IF NOT EXISTS segments(
 
 // Column order shared by every query that returns a job.
 const COLS: &str = "id,url,out_path,state,referer,user_agent,headers,cookie,sha256,etag,\
-                    last_modified,error,size,accept_ranges,nseg,created,not_before";
+                    last_modified,error,size,accept_ranges,nseg,created,not_before,secret_ref";
 
 fn opt(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
@@ -135,6 +149,7 @@ fn row_to_job(r: &Row) -> rusqlite::Result<Job> {
         segments: r.get::<_, i64>(14)? as u32,
         created: r.get(15)?,
         not_before: r.get(16)?,
+        secret_ref: r.get(17)?,
     })
 }
 
@@ -165,6 +180,20 @@ impl Store {
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch(SCHEMA)?;
+        // Databases created by older versions lack the `secret_ref` column.
+        let has_ref = {
+            let mut st = conn.prepare("PRAGMA table_info(jobs)")?;
+            st.query_map([], |r| r.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .iter()
+                .any(|c| c == "secret_ref")
+        };
+        if !has_ref {
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN secret_ref TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -295,6 +324,74 @@ impl Store {
     pub fn delete_job(&self, id: i64) -> Result<()> {
         self.db().execute("DELETE FROM jobs WHERE id=?1", [id])?;
         Ok(())
+    }
+
+    /// Replaces the URL and clears the stored headers/cookie of a job, recording its
+    /// keyring reference. Used when credentials are moved to the keyring (the URL is
+    /// stored without userinfo).
+    pub fn set_credentials(
+        &self,
+        id: i64,
+        url: &str,
+        headers: &[String],
+        cookie: Option<&str>,
+        secret_ref: &str,
+    ) -> Result<()> {
+        self.db().execute(
+            "UPDATE jobs SET url=?2, headers=?3, cookie=?4, secret_ref=?5 WHERE id=?1",
+            params![
+                id,
+                url,
+                headers.join("\n"),
+                cookie.unwrap_or(""),
+                secret_ref
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// All queued jobs whose stored row still carries credentials (headers, cookie or
+    /// URL userinfo). These are the rows the keyring migration must convert.
+    pub fn plaintext_jobs(&self) -> Result<Vec<PlaintextJob>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT id,url,headers,cookie FROM jobs WHERE headers <> '' OR cookie <> '' OR instr(url,'@') > 0",
+        )?;
+        let rows = st.query_map([], |r| {
+            let headers: String = r.get(2)?;
+            Ok(PlaintextJob {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                headers: headers
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                cookie: opt(r.get(3)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Rewrites the database file and truncates the WAL, so that values cleared by an
+    /// `UPDATE` (the plaintext credentials of the keyring migration) do not linger in
+    /// free space or in old WAL frames.
+    pub fn compact(&self) -> Result<()> {
+        let db = self.db();
+        db.execute_batch("VACUUM")?;
+        db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
+    /// The stored proxy setting, if any (the value may carry userinfo in old,
+    /// un-migrated databases).
+    pub fn proxy_setting(&self) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .query_row("SELECT value FROM settings WHERE key='proxy'", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
     }
 
     /// Jobs left `active` by a crashed process become `queued` again.

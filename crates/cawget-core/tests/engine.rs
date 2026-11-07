@@ -1,9 +1,11 @@
 //! End-to-end tests of the engine against a local HTTP/HTTPS server: real sockets, real files,
 //! real SQLite. Each test starts its own server, so tests are independent and run in parallel.
 
+use cawget_core::secrets::MemorySecretStore;
 use cawget_core::{AddRequest, Event, Manager, RunOptions, RunSummary, State, Store};
 use cawget_testserver::{self as server, TestServer, expected_sha, sha_file};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -23,8 +25,13 @@ impl Env {
         let db = tmp.path().join("s.db");
         Env { _tmp: tmp, dl, db }
     }
+    /// A manager with an in-memory secret store: tests never touch the real keyring.
     fn manager(&self) -> Manager {
-        Manager::open(&self.db).unwrap()
+        Manager::with_store_and_secrets_at(
+            Store::open(&self.db).unwrap(),
+            Arc::new(MemorySecretStore::new()),
+            Some(&self.db),
+        )
     }
     fn files(&self) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(&self.dl)

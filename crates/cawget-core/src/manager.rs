@@ -7,6 +7,10 @@ use crate::error::{Error, Result};
 use crate::http;
 use crate::job::{self, JobEnv, Outcome, Progress};
 use crate::limiter::Limiter;
+use crate::secrets::{
+    self, KeyringMigration, KeyringSecretStore, SecretStore, job_has_plaintext, job_key,
+    strip_url_userinfo, url_has_userinfo,
+};
 use crate::settings::Settings;
 use crate::store::{Job, NewJob, State, Store};
 use crate::util::{in_window, local_minute_of_day, unix_now};
@@ -110,6 +114,12 @@ struct Running {
 
 struct Inner {
     store: Arc<Store>,
+    /// The secret store (keyring) used for credentials.
+    secrets: Arc<dyn SecretStore>,
+    /// Cache of the hydrated proxy URL: (keyring key, full URL).
+    proxy_secret: Mutex<Option<(String, String)>>,
+    /// Result of the plaintext→keyring migration run at open.
+    keyring_migration: Mutex<Option<KeyringMigration>>,
     /// Lock file taken by `run`, so only one scheduler works on a database at a time.
     lock_path: Option<std::path::PathBuf>,
     running: Mutex<HashMap<i64, Running>>,
@@ -128,21 +138,51 @@ pub struct Manager {
 }
 
 impl Manager {
+    /// Opens the database and runs the plaintext→keyring migration (see
+    /// [`secrets::migrate_plaintext_secrets`]). The migration never blocks startup: if
+    /// the keyring is unavailable the plaintext is kept and the manager keeps working.
     pub fn open(db: &Path) -> Result<Manager> {
-        let mut m = Self::with_store(Store::open(db)?);
-        let mut lock = db.as_os_str().to_owned();
-        lock.push(".lock");
-        Arc::get_mut(&mut m.inner).expect("fresh manager").lock_path = Some(lock.into());
+        let store = Store::open(db)?;
+        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore);
+        let migration = secrets::migrate_plaintext_secrets(&store, secrets.as_ref(), Some(db));
+        let m = Self::with_store_and_secrets_at(store, secrets, Some(db));
+        *m.inner
+            .keyring_migration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(migration);
         Ok(m)
     }
 
     pub fn with_store(store: Store) -> Manager {
+        Self::with_store_and_secrets_at(store, Arc::new(KeyringSecretStore), None)
+    }
+
+    /// A manager with a custom secret store (tests use the in-memory mock).
+    pub fn with_store_and_secrets(store: Store, secrets: Arc<dyn SecretStore>) -> Manager {
+        Self::with_store_and_secrets_at(store, secrets, None)
+    }
+
+    /// Internal constructor used by `open` and by tests (which inject a mock secret
+    /// store and still get the engine lock file).
+    pub fn with_store_and_secrets_at(
+        store: Store,
+        secrets: Arc<dyn SecretStore>,
+        db: Option<&Path>,
+    ) -> Manager {
         let settings = Settings::load(&store);
         let (events, _) = broadcast::channel(256);
+        let lock_path = db.map(|p| {
+            let mut lock = p.as_os_str().to_owned();
+            lock.push(".lock");
+            std::path::PathBuf::from(lock)
+        });
         Manager {
             inner: Arc::new(Inner {
                 store: Arc::new(store),
-                lock_path: None,
+                secrets,
+                proxy_secret: Mutex::new(None),
+                keyring_migration: Mutex::new(None),
+                lock_path,
                 running: Mutex::new(HashMap::new()),
                 limiter: Arc::new(Limiter::new(settings.max_speed)),
                 client: Mutex::new(None),
@@ -154,6 +194,15 @@ impl Manager {
         }
     }
 
+    /// What the plaintext→keyring migration did at open (`None` before `open`).
+    pub fn keyring_migration(&self) -> Option<KeyringMigration> {
+        self.inner
+            .keyring_migration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn store(&self) -> &Store {
         &self.inner.store
     }
@@ -163,14 +212,102 @@ impl Manager {
     }
 
     pub fn settings(&self) -> Settings {
-        Settings::load(&self.inner.store)
+        let mut s = Settings::load(&self.inner.store);
+        self.hydrate_proxy(&mut s);
+        s
     }
 
-    /// Validates and stores a setting; speed limits take effect immediately.
+    /// Replaces a stored proxy URL that has no userinfo with the full URL from the
+    /// keyring, if proxy credentials were saved. The call is cached per keyring key.
+    fn hydrate_proxy(&self, s: &mut Settings) {
+        if s.proxy.is_empty() || s.proxy == "none" || url_has_userinfo(&s.proxy) {
+            return;
+        }
+        let Ok(Some(key)) = self.inner.store.get_setting("keyring.proxy_ref") else {
+            return;
+        };
+        let mut slot = self
+            .inner
+            .proxy_secret
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((cached, full)) = slot.as_ref()
+            && cached == &key
+        {
+            s.proxy = full.clone();
+            return;
+        }
+        if let Ok(Some(full)) = self.inner.secrets.get(&key) {
+            s.proxy = full.clone();
+            *slot = Some((key, full));
+        }
+    }
+
+    /// Validates and stores a setting; speed limits take effect immediately. The
+    /// `proxy` setting is special: a proxy URL with userinfo goes to the keyring and
+    /// the database keeps only the URL without credentials plus a reference.
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        Settings::set(&self.inner.store, key, value)?;
+        if key == "proxy" {
+            self.set_proxy_setting(value)?;
+        } else {
+            Settings::set(&self.inner.store, key, value)?;
+        }
         self.inner.limiter.set_rate(self.settings().max_speed);
         self.inner.wake.notify_one();
+        Ok(())
+    }
+
+    fn set_proxy_setting(&self, value: &str) -> Result<()> {
+        let clear_saved = || -> Result<()> {
+            if let Some(key) = self.inner.store.get_setting("keyring.proxy_ref")? {
+                let _ = self.inner.secrets.delete(&key);
+                self.inner.store.unset_setting("keyring.proxy_ref")?;
+            }
+            *self
+                .inner
+                .proxy_secret
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed == "none" {
+            clear_saved()?;
+            return Settings::set(&self.inner.store, "proxy", value);
+        }
+        let (full, sanitized) = if url_has_userinfo(trimmed) {
+            let sane = strip_url_userinfo(trimmed)?;
+            (Some(trimmed.to_string()), sane)
+        } else {
+            (None, trimmed.to_string())
+        };
+        // Validate through the normal rules (scheme + host), on the credential-free form.
+        Settings::default().apply("proxy", &sanitized)?;
+        if let Some(full) = full {
+            if !self.inner.secrets.available() {
+                return Err(Error::KeyringUnavailable(
+                    "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
+                ));
+            }
+            self.inner.secrets.put(secrets::PROXY_KEY, &full)?;
+            if self.inner.secrets.get(secrets::PROXY_KEY)? != Some(full.clone()) {
+                return Err(Error::Keyring(
+                    "proxy credentials failed read-back verification".into(),
+                ));
+            }
+            self.inner.store.set_setting("proxy", &sanitized)?;
+            self.inner
+                .store
+                .set_setting("keyring.proxy_ref", secrets::PROXY_KEY)?;
+            *self
+                .inner
+                .proxy_secret
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some((secrets::PROXY_KEY.into(), full));
+        } else {
+            clear_saved()?;
+            self.inner.store.set_setting("proxy", &sanitized)?;
+        }
         Ok(())
     }
 
@@ -207,6 +344,7 @@ impl Manager {
             user_agent: req.user_agent.clone(),
             headers: req.headers.clone(),
             cookie: req.cookie.clone(),
+            secret_ref: String::new(),
             sha256: None,
             etag: None,
             last_modified: None,
@@ -266,21 +404,73 @@ impl Manager {
             // No folder chosen: decided on first contact, when the file name (and so its category) is known.
             String::new()
         };
+        // Credentials never go into the database: the URL is stripped of userinfo and
+        // the headers/cookie are kept out of the row (the `secret_ref` column is the
+        // only thing stored). Without a keyring this is a clear error, never a
+        // plaintext fallback.
+        let has_secret = job_has_plaintext(&req.url, &req.headers, req.cookie.as_deref());
+        let stripped_url = if url_has_userinfo(&req.url) {
+            strip_url_userinfo(&req.url)?
+        } else {
+            req.url.clone()
+        };
+        if has_secret && !self.inner.secrets.available() {
+            return Err(Error::KeyringUnavailable(
+                "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
+            ));
+        }
+        // A job with credentials is inserted paused and only released to the scheduler
+        // once its secret is in the keyring and the row references it; otherwise the
+        // scheduler could start it without its login in the meantime.
+        let want_paused = req.paused;
         let id = self.inner.store.add_job(
             &NewJob {
-                url: req.url,
+                url: stripped_url,
                 out_path,
-                paused: req.paused,
+                paused: req.paused || has_secret,
                 referer: req.referer,
                 user_agent: req.user_agent,
-                headers: req.headers,
-                cookie: req.cookie,
+                headers: Vec::new(),
+                cookie: None,
                 sha256: req.sha256.map(|s| s.to_ascii_lowercase()),
                 segments: req.segments.unwrap_or(0),
                 not_before: req.not_before,
             },
             unix_now(),
         )?;
+        if has_secret {
+            let store_secret = (|| -> Result<()> {
+                let key = job_key(id);
+                let secret = crate::secrets::JobSecret {
+                    url: req.url,
+                    headers: req.headers,
+                    cookie: req.cookie,
+                };
+                let json = serde_json::to_string(&secret).map_err(|e| {
+                    Error::Keyring(format!("cannot serialize job credentials: {e}"))
+                })?;
+                self.inner.secrets.put(&key, &json)?;
+                if self.inner.secrets.get(&key)? != Some(json.clone()) {
+                    return Err(Error::Keyring(
+                        "job credentials failed read-back verification".into(),
+                    ));
+                }
+                let url = strip_url_userinfo(&secret.url)?;
+                self.inner
+                    .store
+                    .set_credentials(id, &url, &[], None, &key)?;
+                if !want_paused {
+                    self.inner.store.set_state(id, State::Queued, None)?;
+                }
+                Ok(())
+            })();
+            if let Err(e) = store_secret {
+                // Do not leave a row or a keyring entry behind when the add failed.
+                let _ = self.inner.store.delete_job(id);
+                let _ = self.inner.secrets.delete(&job_key(id));
+                return Err(e);
+            }
+        }
         self.inner.wake.notify_one();
         Ok(id)
     }
@@ -313,11 +503,19 @@ impl Manager {
         Ok(())
     }
 
+    fn forget_secret(&self, job: &Job) {
+        if !job.secret_ref.is_empty() {
+            // Best-effort: a failed keyring delete must never block removing the row.
+            let _ = self.inner.secrets.delete(&job.secret_ref);
+        }
+    }
+
     /// Forgets a job. Partial data is deleted; a finished file only with `delete_file`.
     pub fn remove(&self, id: i64, delete_file: bool) -> Result<()> {
         let job = self.inner.store.require_job(id)?;
         self.cancel_running(id, Reason::Remove);
         self.inner.store.delete_job(id)?;
+        self.forget_secret(&job);
         if !job.out_path.is_empty() && !job.out_path.ends_with('/') {
             if job.state != State::Done {
                 let _ = std::fs::remove_file(format!("{}.part", job.out_path));
@@ -333,6 +531,7 @@ impl Manager {
         let done = self.inner.store.list_jobs(Some(State::Done))?;
         for j in &done {
             self.inner.store.delete_job(j.id)?;
+            self.forget_secret(j);
         }
         Ok(done.len())
     }
@@ -490,8 +689,23 @@ impl Manager {
             .min()
     }
 
-    fn spawn_job(&self, tasks: &mut tokio::task::JoinSet<()>, job: Job, s: Settings) {
+    fn spawn_job(&self, tasks: &mut tokio::task::JoinSet<()>, mut job: Job, s: Settings) {
         let id = job.id;
+        // Hydrate the credentials from the keyring before anything is sent. A missing
+        // or unreadable secret fails the job with a clear error instead of silently
+        // downloading without authentication.
+        if let Err(e) = crate::secrets::hydrate_job(&mut job, self.inner.secrets.as_ref()) {
+            let _ = self
+                .inner
+                .store
+                .set_state(id, State::Failed, Some(&e.to_string()));
+            self.inner.failed.fetch_add(1, Ordering::Relaxed);
+            let _ = self.inner.events.send(Event::Failed {
+                id,
+                error: e.to_string(),
+            });
+            return;
+        }
         let client = match self.client_for(&s) {
             Ok(c) => c,
             Err(m) => {

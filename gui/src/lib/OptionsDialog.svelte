@@ -177,7 +177,7 @@
         <button class="btn" disabled={pmode !== "manual"} onclick={commitProxy}>Apply</button>
       </div>
       {#if proxyErr}<p class="error-text" role="alert">{proxyErr}</p>{/if}
-      <p class="hint">A login can be included as http://user:password@host:port; it is stored unencrypted in the local settings. The setting applies to downloads that start after the change.</p>
+      <p class="hint">A login can be included as http://user:password@host:port; it is kept in your system keyring (GNOME Keyring / KWallet), and only a reference is stored in the local settings. The setting applies to downloads that start after the change.</p>
     {:else if tab === "logins"}
       <p class="hint">Saved logins per site are not supported yet. A user name and password for one download can be given in Add downloads (Log in to the server).</p>
       <table class="conn-table" title={SOON}><thead><tr><th>Site</th><th>User name</th></tr></thead><tbody><tr><td colspan="2" class="hint">{SOON}</td></tr></tbody></table>

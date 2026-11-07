@@ -22,6 +22,13 @@ pub enum Error {
         crate::product_name!()
     )]
     Busy,
+    /// The system keyring (Secret Service) is not available, so credentials cannot be
+    /// stored. There is intentionally no plaintext fallback.
+    #[error("system keyring is not available: {0}")]
+    KeyringUnavailable(String),
+    /// A keyring operation failed for another reason.
+    #[error("system keyring error: {0}")]
+    Keyring(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

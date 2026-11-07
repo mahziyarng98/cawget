@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Credentials (download logins, proxy logins, cookies, custom headers) are stored in the system keyring
+  (Secret Service: GNOME Keyring / KWallet), not in the SQLite database, which keeps only references. Without a
+  keyring, saving logins fails with a clear error (no plaintext fallback) and downloads that need them do not
+  start.
+- On the first start after the upgrade, plaintext credentials in existing databases are migrated to the keyring:
+  the database is backed up next to it (`cawget.db.pre-keyring-<timestamp>.bak`), each login is written and
+  verified by reading it back, and only then is the plaintext cleared. If the keyring is unavailable the
+  migration is postponed (the plaintext stays) and retried on the next start.
+- Flatpak packaging requests Secret Service access (`--talk-name=org.freedesktop.secrets`).
+
 ## [0.1.0] - first public release
 
 First public release of Cawget (Cawget Download Manager).

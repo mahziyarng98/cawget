@@ -18,6 +18,9 @@ Only the latest release receives security fixes.
 ## Known limitations
 
 - Credentials (HTTP Basic logins, proxy credentials, URLs containing `user:password@`, `--cookie`/`-H` values)
-  are stored **unencrypted** in the queue database (`~/.local/share/cawget/cawget.db`). Cawget creates the
-  directory `0700` and the database `0600`; files that already exist keep their permissions. Do not share it.
+  are stored in the system keyring (Secret Service), not in the queue database; the database keeps only a
+  reference. If the keyring is unavailable, Cawget refuses to store new logins (no plaintext fallback) and
+  postpones the migration of existing plaintext. The migration backup
+  (`cawget.db.pre-keyring-<timestamp>.bak`) contains the old plaintext until you delete it.
+- Anything running as your user can read the keyring while the session is unlocked.
 - Cawget speaks HTTP and HTTPS only. TLS is handled by rustls; `cacert` can point at a custom CA file.
