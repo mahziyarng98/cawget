@@ -101,6 +101,8 @@
           <li>Downloads whose login cannot be read wait for the keyring and start once it is available.</li>
           <li>Addresses of the form user:password@host now authenticate every request.</li>
           <li>Passwords are no longer shown in command line output, settings or error messages.</li>
+          <li>The tray icon now shows correctly in the Flatpak build.</li>
+          <li>Dialogs can be moved by dragging their title bar, and header text no longer gets selected accidentally.</li>
         </ul>
       </description>
     </release>
