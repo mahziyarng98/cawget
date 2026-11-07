@@ -94,6 +94,12 @@ pub fn create_private_file(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Forces mode 0600 on an existing file (used for migration backups, which contain
+/// the pre-migration plaintext).
+pub fn set_private_file_mode(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
 /// The database to use when the user named none: the new default, migrating from a legacy location if needed.
 /// Returns the path to open and what happened.
 pub fn resolve_default_db() -> Result<(PathBuf, Migration)> {
