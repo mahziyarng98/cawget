@@ -1,6 +1,6 @@
 pkgbase = cawget-bin
 	pkgdesc = Fast segmented download manager for Linux (desktop app)
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/mahziyarng98/cawget
 	arch = x86_64
@@ -18,7 +18,7 @@ pkgbase = cawget-bin
 	conflicts = cawget
 	options = !strip
 	options = !debug
-	source = cawget-0.1.0.deb::https://github.com/mahziyarng98/cawget/releases/download/v0.1.0/Cawget_0.1.0_amd64.deb
-	sha256sums = b0daf1a61ec9706d6537aa9ab56d3930d17138efc866a7bbb8ee5fe2ede27e9f
+	source = cawget-0.1.1.deb::https://github.com/mahziyarng98/cawget/releases/download/v0.1.1/Cawget_0.1.1_amd64.deb
+	sha256sums = a807a9959a402e7e4e915a4aeaa2d68228575242ac56fcb9c7aa0c58cd59624f
 
 pkgname = cawget-bin

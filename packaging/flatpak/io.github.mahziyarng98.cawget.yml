@@ -79,8 +79,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/mahziyarng98/cawget.git
-        tag: v0.1.0
-        commit: 71e5362b8144c3eace05d1c0f21898cff1ada1e5
+        tag: v0.1.1
+        commit: e66eed52cdfec065fe45f64d96d36c516ec1e9bb
       # node-sources.json lives next to this manifest (packaging/flatpak/);
       # flatpak-builder resolves relative source paths against the manifest
       # file's directory. It is generated from gui/package-lock.json by
@@ -119,8 +119,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/mahziyarng98/cawget.git
-        tag: v0.1.0
-        commit: 71e5362b8144c3eace05d1c0f21898cff1ada1e5
+        tag: v0.1.1
+        commit: e66eed52cdfec065fe45f64d96d36c516ec1e9bb
       # cargo-sources.json lives next to this manifest; it is generated from
       # the workspace-root Cargo.lock by flatpak-cargo-generator (see
       # build-local.sh). gui/src-tauri's crate "cawget" is a workspace member,

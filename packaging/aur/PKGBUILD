@@ -7,7 +7,7 @@
 #   3. regenerate .SRCINFO: makepkg --printsrcinfo > .SRCINFO
 
 pkgname=cawget-bin
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Fast segmented download manager for Linux (desktop app)'
 arch=('x86_64')
@@ -19,7 +19,7 @@ provides=('cawget')
 conflicts=('cawget')
 options=('!strip' '!debug')
 source=("cawget-${pkgver}.deb::${url}/releases/download/v${pkgver}/Cawget_${pkgver}_amd64.deb")
-sha256sums=('b0daf1a61ec9706d6537aa9ab56d3930d17138efc866a7bbb8ee5fe2ede27e9f')
+sha256sums=('a807a9959a402e7e4e915a4aeaa2d68228575242ac56fcb9c7aa0c58cd59624f')
 
 package() {
   bsdtar -xf data.tar.* -C "${pkgdir}"
