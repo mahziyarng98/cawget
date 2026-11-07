@@ -2,7 +2,7 @@
   import { APP_VERSION, PRODUCT_NAME } from "./brand";
   import Modal from "./Modal.svelte";
 
-  let { logo, dbPath, migratedFrom = null, migrationDeferred = null, onclose }: { logo: string; dbPath: string; migratedFrom?: string | null; migrationDeferred?: string | null; onclose: () => void } = $props();
+  let { logo, dbPath, migratedFrom = null, migrationDeferred = null, credentials = null, onclose }: { logo: string; dbPath: string; migratedFrom?: string | null; migrationDeferred?: string | null; credentials?: string | null; onclose: () => void } = $props();
 </script>
 
 <Modal title={`About ${PRODUCT_NAME}`} width={420} {onclose}>
@@ -17,6 +17,7 @@
       <p class="hint selectable">Queue database: <bdi>{dbPath}</bdi></p>
       {#if migratedFrom}<p class="hint selectable">Copied at this start from <bdi>{migratedFrom}</bdi> (the old file was left unchanged).</p>{/if}
       {#if migrationDeferred}<p class="hint">The old queue is in use by another program, so it is used in place for now; it will be copied on a later start.</p>{/if}
+      {#if credentials}<p class="hint selectable">{credentials}</p>{/if}
     </div>
   </div>
   {#snippet buttons()}

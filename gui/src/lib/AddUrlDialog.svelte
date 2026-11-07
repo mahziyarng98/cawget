@@ -73,7 +73,7 @@
       <label for="add-password">Password</label>
       <input id="add-password" class="input" type="password" autocomplete="off" disabled={!useAuth} bind:value={password} onkeydown={(e) => e.key === "Enter" && ok()} />
     </div>
-    <p class="hint">Sent as HTTP Basic authorization. It is stored with the download in the local queue database, unencrypted.</p>
+    <p class="hint">Sent as HTTP Basic authorization. It is kept in your system keyring (GNOME Keyring / KWallet); the queue database only stores a reference.</p>
   </fieldset>
 
   {#if local || error}<p class="error-text" role="alert">{local || error}</p>{/if}

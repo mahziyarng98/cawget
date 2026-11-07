@@ -449,6 +449,12 @@ async fn main() -> ExitCode {
         Ok(m) => m,
         Err(e) => return fail(format!("cannot open database {}: {e}", db.display())),
     };
+    // Report what the plaintext→keyring migration did (or why nothing was migrated).
+    if let Some(r) = m.keyring_migration()
+        && !matches!(r, cawget_core::secrets::KeyringMigration::NotNeeded)
+    {
+        eprintln!("cawget-cli: {}", r.summary());
+    }
     match cli.command {
         Cmd::Add(a) => {
             let reqs = match build_requests(&a) {
