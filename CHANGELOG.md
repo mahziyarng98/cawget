@@ -15,6 +15,22 @@ All notable changes to this project are documented here. The format follows
   verified by reading it back, and only then is the plaintext cleared. If the keyring is unavailable the
   migration is postponed (the plaintext stays) and retried on the next start.
 - Flatpak packaging requests Secret Service access (`--talk-name=org.freedesktop.secrets`).
+- A download whose login cannot be read because the keyring is unavailable waits ("waiting for the system
+  keyring") and starts by itself once the keyring is back; it is never sent without its login.
+
+### Fixed
+- The keyring is re-checked on every use: credentials work as soon as GNOME Keyring / KWallet starts, without
+  restarting Cawget. Keyring calls time out (30 s) with a clear error and run off the scheduler and UI threads, so
+  a locked or hanging keyring no longer stalls other downloads or the window.
+- `user:password@host` addresses now authenticate every segment request (they used to fail with HTTP 401 after the
+  first request); the login is sent as an `Authorization` header and never kept in the stored or shown address.
+- Passwords are masked (`user:***@host`) in CLI output, settings, error messages and debug output; addresses that
+  do not parse are refused instead of being stored.
+- The migration backup is created with mode 0600 from the start, and retries after a partial failure reuse the
+  first backup instead of writing a new copy of the plaintext each time.
+- Keyring entries left behind when the keyring was down (removed downloads, cleared proxy login) or by an
+  interrupted add/remove are removed at a later start. Keyring keys are now per database, so several databases
+  never overwrite each other's logins.
 
 ## [0.1.0] - first public release
 
