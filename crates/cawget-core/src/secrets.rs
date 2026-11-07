@@ -390,13 +390,30 @@ pub struct JobSecret {
     pub cookie: Option<String>,
 }
 
-/// The keyring key for a job's secret.
-pub fn job_key(id: i64) -> SecretRef {
-    format!("job-{id}")
+impl std::fmt::Debug for JobSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobSecret")
+            .field("url", &crate::redact::mask_url(&self.url))
+            .field("headers", &crate::redact::RedactedHeaders(&self.headers))
+            .field("cookie", &crate::redact::opt_secret(&self.cookie))
+            .finish()
+    }
 }
 
-/// The keyring key for the proxy credentials.
-pub const PROXY_KEY: &str = "proxy";
+/// The keyring key for a job's secret.
+///
+/// Keys are prefixed with the database's keyring namespace
+/// ([`Store::keyring_namespace`]), so several databases (`--db`, a migrated old
+/// queue) never share or delete each other's entries. Rows store their exact key, so
+/// keys written without a namespace by earlier versions keep working.
+pub fn job_key(namespace: &str, id: i64) -> SecretRef {
+    format!("{namespace}/job-{id}")
+}
+
+/// The keyring key for the proxy credentials of a database (see [`job_key`]).
+pub fn proxy_key(namespace: &str) -> SecretRef {
+    format!("{namespace}/proxy")
+}
 
 /// Whether a URL carries userinfo (`user:password@host`).
 pub fn url_has_userinfo(url: &str) -> bool {
@@ -492,6 +509,48 @@ pub fn hydrate_job(job: &mut Job, secrets: &dyn SecretStore) -> Result<()> {
     job.headers = secret.headers;
     job.cookie = secret.cookie;
     Ok(())
+}
+
+// ---- keeping the keyring in step with the database ----
+
+/// Pending references younger than this (seconds) are left alone by a reconciliation:
+/// they may belong to an add or remove still in progress in another process.
+pub const RECONCILE_MIN_AGE: i64 = 30;
+
+/// Best-effort repair of keyring entries that may be out of step with the database.
+///
+/// Every operation that could leave a keyring entry without a database reference
+/// (adding a job with a login, removing such a job, clearing the proxy login) first
+/// marks the entry's deterministic reference as pending in the same transaction as the
+/// database change, and clears the mark when the keyring part succeeded. Here, each
+/// pending reference older than `min_age` is checked: if the database still refers to
+/// it the entry is kept, otherwise it is deleted. Marks stay when the keyring is
+/// unavailable, so the next attempt finishes the job. Returns the entries removed.
+pub fn reconcile_secrets(db: &Store, secrets: &dyn SecretStore, now: i64, min_age: i64) -> usize {
+    let Ok(pending) = db.pending_secrets() else {
+        return 0;
+    };
+    let mut removed = 0;
+    for (r, since) in pending {
+        if now - since < min_age {
+            continue;
+        }
+        match db.secret_referenced(&r) {
+            Ok(true) => {
+                let _ = db.clear_secret_pending(&r);
+            }
+            Ok(false) => match secrets.delete(&r) {
+                Ok(()) => {
+                    let _ = db.clear_secret_pending(&r);
+                    removed += 1;
+                }
+                // The keyring is down or hanging: stop, the marks stay for next time.
+                Err(_) => break,
+            },
+            Err(_) => {}
+        }
+    }
+    removed
 }
 
 // ---- migration of existing plaintext data ----
@@ -666,9 +725,18 @@ pub fn migrate_plaintext_secrets(
                 };
             }
         },
-        None => None,
+        (None, None) => None,
     };
 
+    let ns = match db.keyring_namespace() {
+        Ok(ns) => ns,
+        Err(e) => {
+            return KeyringMigration::Failed {
+                error: e.to_string(),
+            };
+        }
+    };
+    let proxy_ref = proxy_key(&ns);
     let mut migrated_jobs = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for j in &jobs {
@@ -684,7 +752,7 @@ pub fn migrate_plaintext_secrets(
                 continue;
             }
         };
-        let key = job_key(j.id);
+        let key = job_key(&ns, j.id);
         if let Err(e) = secrets.put(&key, &json) {
             failures.push(format!("storing credentials of job {}: {e}", j.id));
             continue;
@@ -721,11 +789,11 @@ pub fn migrate_plaintext_secrets(
     let mut migrated_proxy = false;
     if let Some(full) = &proxy {
         let mut proxy_failed = false;
-        if let Err(e) = secrets.put(PROXY_KEY, full) {
+        if let Err(e) = secrets.put(&proxy_ref, full) {
             proxy_failed = true;
             failures.push(format!("storing proxy credentials: {e}"));
         } else {
-            match secrets.get(PROXY_KEY) {
+            match secrets.get(&proxy_ref) {
                 Ok(Some(v)) if v == *full => {}
                 Ok(_) => {
                     proxy_failed = true;
@@ -743,7 +811,7 @@ pub fn migrate_plaintext_secrets(
         if !proxy_failed {
             match strip_url_userinfo(full).and_then(|url| {
                 db.set_setting("proxy", &url)
-                    .and_then(|()| db.set_setting("keyring.proxy_ref", PROXY_KEY))
+                    .and_then(|()| db.set_setting("keyring.proxy_ref", &proxy_ref))
             }) {
                 Ok(()) => migrated_proxy = true,
                 Err(e) => failures.push(e.to_string()),
@@ -971,7 +1039,7 @@ mod tests {
         hydrate_job(&mut job, &s).unwrap();
         assert!(job.headers.is_empty());
 
-        job.secret_ref = job_key(1);
+        job.secret_ref = job_key("t", 1);
         s.put(
             &job.secret_ref,
             &serde_json::to_string(&JobSecret {
@@ -988,7 +1056,7 @@ mod tests {
         assert_eq!(job.cookie.as_deref(), Some("sid=1"));
 
         // Missing entry is a clear error, never silent.
-        job.secret_ref = job_key(99);
+        job.secret_ref = job_key("t", 99);
         assert!(matches!(hydrate_job(&mut job, &s), Err(Error::Keyring(_))));
     }
 }

@@ -184,8 +184,15 @@ impl Manager {
     /// the keyring is unavailable the plaintext is kept and the manager keeps working.
     pub fn open(db: &Path) -> Result<Manager> {
         let store = Store::open(db)?;
-        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore);
+        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore::new());
         let migration = secrets::migrate_plaintext_secrets(&store, secrets.as_ref(), Some(db));
+        // Best effort: remove keyring entries left behind by an interrupted add/remove.
+        secrets::reconcile_secrets(
+            &store,
+            secrets.as_ref(),
+            unix_now(),
+            secrets::RECONCILE_MIN_AGE,
+        );
         let m = Self::with_store_and_secrets_at(store, secrets, Some(db));
         *m.inner
             .keyring_migration
@@ -342,9 +349,15 @@ impl Manager {
 
     fn set_proxy_setting(&self, value: &str) -> Result<()> {
         let clear_saved = || -> Result<()> {
-            if let Some(key) = self.inner.store.get_setting("keyring.proxy_ref")? {
-                let _ = self.inner.secrets.delete(&key);
-                self.inner.store.unset_setting("keyring.proxy_ref")?;
+            if let Some(key) = self.inner.store.get_setting(PROXY_REF_SETTING)? {
+                // Reference gone and entry marked pending in one step, then the entry is
+                // deleted; if the keyring is down the pending mark gets it removed later.
+                self.inner.store.unset_setting_marking_secret(
+                    PROXY_REF_SETTING,
+                    &key,
+                    unix_now(),
+                )?;
+                self.forget_secret_ref(&key);
             }
             *self
                 .inner
@@ -377,25 +390,32 @@ impl Manager {
         Settings::default().apply("proxy", &sanitized)?;
         if let Some(full) = full {
             if !self.inner.secrets.available() {
-                return Err(Error::KeyringUnavailable(
-                    "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-                ));
+                return Err(Error::KeyringUnavailable(NO_KEYRING.into()));
             }
-            self.inner.secrets.put(secrets::PROXY_KEY, &full)?;
-            if self.inner.secrets.get(secrets::PROXY_KEY)? != Some(full.clone()) {
+            // Pending until the database refers to it: an interrupted change cannot leave
+            // an untracked entry.
+            let key = secrets::proxy_key(&self.inner.store.keyring_namespace()?);
+            self.inner.store.mark_secret_pending(&key, unix_now())?;
+            self.inner.secrets.put(&key, &full)?;
+            if self.inner.secrets.get(&key)? != Some(full.clone()) {
                 return Err(Error::Keyring(
                     "proxy credentials failed read-back verification".into(),
                 ));
             }
             self.inner.store.set_setting("proxy", &sanitized)?;
-            self.inner
-                .store
-                .set_setting("keyring.proxy_ref", secrets::PROXY_KEY)?;
+            let old = self.inner.store.get_setting(PROXY_REF_SETTING)?;
+            self.inner.store.set_setting(PROXY_REF_SETTING, &key)?;
+            let _ = self.inner.store.clear_secret_pending(&key);
+            // A login saved under an older key (earlier versions used "proxy") goes.
+            if let Some(old) = old.filter(|o| *o != key) {
+                let _ = self.inner.store.mark_secret_pending(&old, unix_now());
+                self.forget_secret_ref(&old);
+            }
             *self
                 .inner
                 .proxy_secret
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some((secrets::PROXY_KEY.into(), full));
+                .unwrap_or_else(|e| e.into_inner()) = Some((key, full));
         } else {
             clear_saved()?;
             self.inner.store.set_setting("proxy", &sanitized)?;
@@ -524,59 +544,66 @@ impl Manager {
             req.url.clone()
         };
         if has_secret && !self.inner.secrets.available() {
-            return Err(Error::KeyringUnavailable(
-                "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-            ));
+            return Err(Error::KeyringUnavailable(NO_KEYRING.into()));
         }
-        // A job with credentials is inserted paused and only released to the scheduler
-        // once its secret is in the keyring and the row references it; otherwise the
-        // scheduler could start it without its login in the meantime.
+        let new_job = NewJob {
+            url: stripped_url,
+            out_path,
+            // A job with credentials is inserted paused and only released to the
+            // scheduler once its secret is in the keyring.
+            paused: req.paused || has_secret,
+            referer: req.referer,
+            user_agent: req.user_agent,
+            headers: Vec::new(),
+            cookie: None,
+            sha256: req.sha256.map(|s| s.to_ascii_lowercase()),
+            segments: req.segments.unwrap_or(0),
+            not_before: req.not_before,
+        };
+        if !has_secret {
+            let id = self.inner.store.add_job(&new_job, unix_now())?;
+            self.inner.wake.notify_one();
+            return Ok(id);
+        }
+        // Row, reference and pending mark are written together: a crash before the
+        // secret is stored leaves a row that fails clearly ("missing from the keyring")
+        // instead of downloading without its login, and no untracked keyring entry.
         let want_paused = req.paused;
-        let id = self.inner.store.add_job(
-            &NewJob {
-                url: stripped_url,
-                out_path,
-                paused: req.paused || has_secret,
-                referer: req.referer,
-                user_agent: req.user_agent,
-                headers: Vec::new(),
-                cookie: None,
-                sha256: req.sha256.map(|s| s.to_ascii_lowercase()),
-                segments: req.segments.unwrap_or(0),
-                not_before: req.not_before,
-            },
-            unix_now(),
-        )?;
-        if has_secret {
-            let store_secret = (|| -> Result<()> {
-                let key = job_key(id);
-                let secret = crate::secrets::JobSecret {
-                    url: req.url,
-                    headers: req.headers,
-                    cookie: req.cookie,
-                };
-                let json = serde_json::to_string(&secret).map_err(|e| {
-                    Error::Keyring(format!("cannot serialize job credentials: {e}"))
-                })?;
-                self.inner.secrets.put(&key, &json)?;
-                if self.inner.secrets.get(&key)? != Some(json.clone()) {
-                    return Err(Error::Keyring(
-                        "job credentials failed read-back verification".into(),
-                    ));
-                }
-                let url = strip_url_userinfo(&secret.url)?;
-                self.inner
-                    .store
-                    .set_credentials(id, &url, &[], None, &key)?;
-                if !want_paused {
-                    self.inner.store.set_state(id, State::Queued, None)?;
-                }
-                Ok(())
-            })();
-            if let Err(e) = store_secret {
+        let ns = self.inner.store.keyring_namespace()?;
+        let (id, key) = self
+            .inner
+            .store
+            .add_job_with_secret(&new_job, unix_now(), |id| job_key(&ns, id))?;
+        let store_secret = (|| -> Result<()> {
+            let secret = crate::secrets::JobSecret {
+                url: req.url,
+                headers: req.headers,
+                cookie: req.cookie,
+            };
+            let json = serde_json::to_string(&secret)
+                .map_err(|e| Error::Keyring(format!("cannot serialize job credentials: {e}")))?;
+            self.inner.secrets.put(&key, &json)?;
+            if self.inner.secrets.get(&key)? != Some(json.clone()) {
+                return Err(Error::Keyring(
+                    "job credentials failed read-back verification".into(),
+                ));
+            }
+            if !want_paused {
+                self.inner.store.set_state(id, State::Queued, None)?;
+            }
+            Ok(())
+        })();
+        match store_secret {
+            Ok(()) => {
+                let _ = self.inner.store.clear_secret_pending(&key);
+            }
+            Err(e) => {
                 // Do not leave a row or a keyring entry behind when the add failed.
-                let _ = self.inner.store.delete_job(id);
-                let _ = self.inner.secrets.delete(&job_key(id));
+                let _ = self
+                    .inner
+                    .store
+                    .delete_job_marking_secret(id, &key, unix_now());
+                self.forget_secret_ref(&key);
                 return Err(e);
             }
         }
@@ -624,19 +651,27 @@ impl Manager {
         Ok(())
     }
 
-    fn forget_secret(&self, job: &Job) {
-        if !job.secret_ref.is_empty() {
-            // Best-effort: a failed keyring delete must never block removing the row.
-            let _ = self.inner.secrets.delete(&job.secret_ref);
-        }
+    /// Deletes a job row together with a pending mark for its keyring entry, then the
+    /// entry itself (best effort: a failed keyring delete never blocks removing the row;
+    /// the pending mark makes a later reconciliation remove the entry).
+    fn delete_job_and_secret(&self, job: &Job) -> Result<()> {
+        self.inner
+            .store
+            .delete_job_marking_secret(job.id, &job.secret_ref, unix_now())?;
+        self.inner
+            .keyring_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&job.id);
+        self.forget_secret_ref(&job.secret_ref);
+        Ok(())
     }
 
     /// Forgets a job. Partial data is deleted; a finished file only with `delete_file`.
     pub fn remove(&self, id: i64, delete_file: bool) -> Result<()> {
         let job = self.inner.store.require_job(id)?;
         self.cancel_running(id, Reason::Remove);
-        self.inner.store.delete_job(id)?;
-        self.forget_secret(&job);
+        self.delete_job_and_secret(&job)?;
         if !job.out_path.is_empty() && !job.out_path.ends_with('/') {
             if job.state != State::Done {
                 let _ = std::fs::remove_file(format!("{}.part", job.out_path));
@@ -651,8 +686,7 @@ impl Manager {
     pub fn clear_finished(&self) -> Result<usize> {
         let done = self.inner.store.list_jobs(Some(State::Done))?;
         for j in &done {
-            self.inner.store.delete_job(j.id)?;
-            self.forget_secret(j);
+            self.delete_job_and_secret(j)?;
         }
         Ok(done.len())
     }
@@ -1014,6 +1048,8 @@ impl Manager {
         let mut last_poll = Instant::now();
         let mut announced_wait = 0i64;
         let mut interrupted = false;
+        let mut last_reconcile = Instant::now();
+        let mut reconcile: Option<tokio::task::JoinHandle<usize>> = None;
 
         loop {
             while tasks.try_join_next().is_some() {}
@@ -1024,6 +1060,24 @@ impl Manager {
             let settings = self.settings();
             inner.limiter.set_rate(settings.max_speed);
             let now = unix_now();
+
+            // Retry removing keyring entries left behind (the keyring may be back).
+            if last_reconcile.elapsed() >= RECONCILE_EVERY
+                && reconcile.as_ref().is_none_or(|h| h.is_finished())
+            {
+                last_reconcile = Instant::now();
+                if inner.store.pending_secrets().is_ok_and(|p| !p.is_empty()) {
+                    let me = Arc::clone(&self.inner);
+                    reconcile = Some(tokio::task::spawn_blocking(move || {
+                        secrets::reconcile_secrets(
+                            &me.store,
+                            me.secrets.as_ref(),
+                            unix_now(),
+                            secrets::RECONCILE_MIN_AGE,
+                        )
+                    }));
+                }
+            }
 
             if last_poll.elapsed() >= Duration::from_secs(1) {
                 last_poll = Instant::now();
