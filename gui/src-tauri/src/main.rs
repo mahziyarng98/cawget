@@ -76,8 +76,22 @@ struct AppInfo {
     credentials: Option<String>,
 }
 
+/// Error text for the UI. URLs in it never carry a password.
 fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
+    cawget_core::redact::redact_text(&e.to_string())
+}
+
+/// Runs an engine call that may talk to the system keyring on a blocking thread: a
+/// locked or hanging keyring must never freeze the window (synchronous commands run on
+/// the main thread).
+async fn off_main<T: Send + 'static>(
+    engine: &Engine,
+    f: impl FnOnce(&Engine) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let engine = engine.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&engine))
+        .await
+        .map_err(err)?
 }
 
 fn snapshot(engine: &Engine) -> Result<Vec<JobDto>, String> {
@@ -144,8 +158,8 @@ async fn probe_url(
 /// `paused` = "Start later". `start_in_secs` delays the start.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn add_downloads(
-    state: State<AppState>,
+async fn add_downloads(
+    state: State<'_, AppState>,
     urls: String,
     dir: Option<String>,
     output: Option<String>,
@@ -171,24 +185,27 @@ fn add_downloads(
         return Err("A file name can only be given for a single address".into());
     }
     let headers = auth_headers(&login, &password);
-    let mut ids = Vec::new();
-    for line in lines {
-        let id = state
-            .engine
-            .add(AddRequest {
-                url: line.to_string(),
-                dir: dir.clone().filter(|d| !d.trim().is_empty()),
-                output: output.clone(),
-                segments,
-                not_before,
-                paused: paused.unwrap_or(false),
-                headers: headers.clone(),
-                ..Default::default()
-            })
-            .map_err(err)?;
-        ids.push(id);
-    }
-    Ok(ids)
+    let lines: Vec<String> = lines.into_iter().map(str::to_string).collect();
+    off_main(&state.engine, move |engine| {
+        let mut ids = Vec::new();
+        for line in lines {
+            let id = engine
+                .add(AddRequest {
+                    url: line,
+                    dir: dir.clone().filter(|d| !d.trim().is_empty()),
+                    output: output.clone(),
+                    segments,
+                    not_before,
+                    paused: paused.unwrap_or(false),
+                    headers: headers.clone(),
+                    ..Default::default()
+                })
+                .map_err(err)?;
+            ids.push(id);
+        }
+        Ok(ids)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -202,13 +219,16 @@ fn resume_job(state: State<AppState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn remove_job(state: State<AppState>, id: i64, delete_file: bool) -> Result<(), String> {
-    state.engine.remove(id, delete_file).map_err(err)
+async fn remove_job(state: State<'_, AppState>, id: i64, delete_file: bool) -> Result<(), String> {
+    off_main(&state.engine, move |e| {
+        e.remove(id, delete_file).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
-fn clear_finished(state: State<AppState>) -> Result<usize, String> {
-    state.engine.clear_finished().map_err(err)
+async fn clear_finished(state: State<'_, AppState>) -> Result<usize, String> {
+    off_main(&state.engine, |e| e.clear_finished().map_err(err)).await
 }
 
 /// Opens a finished download with the desktop's default application.
@@ -499,8 +519,11 @@ fn get_settings(state: State<AppState>) -> SettingsDto {
 }
 
 #[tauri::command]
-fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
-    state.engine.set_setting(&key, &value).map_err(err)
+async fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    off_main(&state.engine, move |e| {
+        e.set_setting(&key, &value).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]

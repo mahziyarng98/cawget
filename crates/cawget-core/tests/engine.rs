@@ -817,3 +817,200 @@ async fn manual_proxy_setting_routes_requests_through_the_proxy() {
     assert_eq!(run_all(&m).await.failed, 1);
     assert!(m.get(id).unwrap().job.error.is_some());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn url_userinfo_is_used_for_probe_and_every_segment() {
+    let (srv, env) = (server::start().await, Env::new());
+    let m = env.manager();
+    let size = 3 * MIB;
+    // user "user", password "pa:ss wörd", percent-encoded in the userinfo.
+    let url = srv
+        .url(&format!("/auth/{size}"))
+        .replacen("://", "://user:pa%3Ass%20w%C3%B6rd@", 1);
+    let mut r = env.req(url);
+    r.segments = Some(4);
+    let id = m.add(r).unwrap();
+    let s = run_all(&m).await;
+    assert_eq!(
+        (s.done, s.failed),
+        (1, 0),
+        "error: {:?}",
+        m.get(id).unwrap().job.error
+    );
+    assert_eq!(sha_file(&env.dl.join(size.to_string())), expected_sha(size));
+    assert!(srv.state.data_ranges().len() >= 3);
+    let job = m.get(id).unwrap().job;
+    assert!(
+        !job.url.contains("pa%3A") && !job.url.contains('@'),
+        "{}",
+        job.url
+    );
+}
+
+fn manager_with(env: &Env, secrets: Arc<MemorySecretStore>) -> Manager {
+    Manager::with_store_and_secrets_at(Store::open(&env.db).unwrap(), secrets, Some(&env.db))
+}
+
+/// Polls `cond` (yielding to the runtime) until it holds or `limit` passes.
+async fn wait_for(limit: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    cond()
+}
+
+// One async worker only: if a keyring call blocked it, nothing else could make progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_hanging_keyring_does_not_block_other_jobs() {
+    let (srv, env) = (server::start().await, Env::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = manager_with(&env, secrets.clone());
+    let mut a = env.req(srv.url("/auth/4096"));
+    a.headers = vec![format!("Authorization: {}", server::AUTH_OK)];
+    a.output = Some(env.dl.join("a.bin").to_string_lossy().into_owned());
+    let id_a = m.add(a).unwrap();
+    secrets.delay(Duration::from_secs(4)); // every keyring call now hangs for 4 s
+    let mut b = env.req(srv.url("/data/4096"));
+    b.output = Some(env.dl.join("b.bin").to_string_lossy().into_owned());
+    let id_b = m.add(b).unwrap();
+
+    let started = Instant::now();
+    let run = tokio::spawn({
+        let m = m.clone();
+        async move { run_all(&m).await }
+    });
+    assert!(
+        wait_for(Duration::from_secs(3), || m.get(id_b).unwrap().job.state
+            == State::Done)
+        .await,
+        "the job without a login must finish while the keyring hangs"
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_ne!(m.get(id_a).unwrap().job.state, State::Done);
+    // The list (what the GUI polls) stays responsive too.
+    let t = Instant::now();
+    m.list().unwrap();
+    assert!(t.elapsed() < Duration::from_millis(500));
+
+    let s = run.await.unwrap();
+    assert_eq!((s.done, s.failed), (2, 0));
+    assert_eq!(sha_file(&env.dl.join("a.bin")), expected_sha(4096));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_waits_for_the_keyring_and_resumes_by_itself() {
+    let (srv, env) = (server::start().await, Env::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = manager_with(&env, secrets.clone());
+    let mut r = env.req(srv.url("/auth/4096"));
+    r.headers = vec![format!("Authorization: {}", server::AUTH_OK)];
+    let id = m.add(r).unwrap();
+    secrets.set_available(false); // the keyring daemon went away before the start
+
+    let run = tokio::spawn({
+        let m = m.clone();
+        async move { run_all(&m).await }
+    });
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            let j = m.get(id).unwrap().job;
+            j.state == State::Queued
+                && j.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("waiting for the system keyring"))
+        })
+        .await,
+        "job must wait with a clear reason, got {:?}",
+        m.get(id).unwrap().job
+    );
+    // Nothing was sent while the login was unavailable.
+    assert!(srv.state.log().is_empty(), "{:?}", srv.state.log());
+
+    secrets.set_available(true);
+    let s = run.await.unwrap();
+    assert_eq!((s.done, s.failed), (1, 0));
+    assert_eq!(m.get(id).unwrap().job.error, None);
+    assert!(srv.state.log().iter().all(|r| r.status != 401));
+    assert_eq!(sha_file(&env.dl.join("4096")), expected_sha(4096));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_job_can_be_resumed_or_paused_by_the_user() {
+    let (srv, env) = (server::start().await, Env::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = manager_with(&env, secrets.clone());
+    let mut r = env.req(srv.url("/auth/4096"));
+    r.headers = vec![format!("Authorization: {}", server::AUTH_OK)];
+    let id = m.add(r).unwrap();
+    secrets.set_available(false);
+    let shutdown = CancellationToken::new();
+    let run = tokio::spawn({
+        let (m, shutdown) = (m.clone(), shutdown.clone());
+        async move {
+            m.run(
+                RunOptions {
+                    daemon: true, // like the GUI: keeps running when nothing is queued
+                    ..Default::default()
+                },
+                shutdown,
+            )
+            .await
+        }
+    });
+    assert!(
+        wait_for(Duration::from_secs(5), || m
+            .get(id)
+            .unwrap()
+            .job
+            .error
+            .is_some())
+        .await
+    );
+    // Pause works on a waiting job and is not undone by the scheduler.
+    m.pause(id).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(m.get(id).unwrap().job.state, State::Paused);
+    // Resume with the keyring back starts it right away.
+    secrets.set_available(true);
+    m.resume(id).unwrap();
+    let ok = wait_for(Duration::from_secs(5), || {
+        m.get(id).unwrap().job.state == State::Done
+    })
+    .await;
+    assert!(ok, "{:?} {:?}", m.get(id).unwrap().job, srv.state.log());
+    shutdown.cancel();
+    run.await.unwrap().unwrap();
+    assert!(srv.state.log().iter().all(|r| r.status != 401));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_does_not_wait_for_a_hanging_keyring() {
+    let (srv, env) = (server::start().await, Env::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = manager_with(&env, secrets.clone());
+    let mut r = env.req(srv.url("/auth/4096"));
+    r.headers = vec![format!("Authorization: {}", server::AUTH_OK)];
+    let id = m.add(r).unwrap();
+    secrets.delay(Duration::from_secs(6));
+    let shutdown = CancellationToken::new();
+    let run = tokio::spawn({
+        let (m, shutdown) = (m.clone(), shutdown.clone());
+        async move { m.run(RunOptions::default(), shutdown).await }
+    });
+    assert!(
+        wait_for(Duration::from_secs(3), || m.get(id).unwrap().job.state
+            == State::Active)
+        .await
+    );
+    let t = Instant::now();
+    shutdown.cancel();
+    let s = run.await.unwrap().unwrap();
+    assert!(s.interrupted);
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(m.get(id).unwrap().job.state, State::Queued, "resumable");
+    secrets.delay(Duration::ZERO);
+}

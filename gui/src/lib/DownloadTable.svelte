@@ -319,7 +319,7 @@
           <div class="td c-line c-sub" role="gridcell">
             <span class="status state-{j.state}" title={j.error ?? undefined}>
               {@render bar(j)}
-              <bdi class="ellipsis">{statusText(j, now())}{j.state === "failed" && j.error ? `: ${j.error}` : ""}</bdi>
+              <bdi class="ellipsis">{statusText(j, now())}{(j.state === "failed" || j.state === "queued") && j.error ? `: ${j.error}` : ""}</bdi>
             </span>
             {#if j.state === "active"}<bdi class="c-meta">{[j.speed > 0 ? `${fmtBytes(j.speed)}/s` : "", j.eta_secs != null ? fmtEta(j.eta_secs) : ""].filter(Boolean).join(" · ")}</bdi>{/if}
           </div>
@@ -335,7 +335,7 @@
             {:else if c === "status"}
               <span class="status state-{j.state}" title={j.error ?? undefined}>
                 {@render bar(j)}
-                <bdi class="ellipsis">{statusText(j, now())}{j.state === "failed" && j.error ? `: ${j.error}` : ""}</bdi>
+                <bdi class="ellipsis">{statusText(j, now())}{(j.state === "failed" || j.state === "queued") && j.error ? `: ${j.error}` : ""}</bdi>
               </span>
             {:else if c === "eta"}
               <bdi>{j.state === "active" && j.eta_secs != null ? fmtEta(j.eta_secs) : ""}</bdi>
