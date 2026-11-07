@@ -8,7 +8,7 @@ build system (GTK, WebKitGTK and their dependencies) are listed in docs/BUNDLED_
 
 ## Summary
 
-* Rust crates compiled into `cawget` and `cawget-cli`: 401
+* Rust crates compiled into `cawget` and `cawget-cli`: 400
 * npm packages compiled into the desktop app's interface: 3
 
 | Component | Version | Licence |
@@ -208,7 +208,6 @@ build system (GTK, WebKitGTK and their dependencies) are listed in docs/BUNDLED_
 | json-patch (crate) | 4.2.0 | MIT/Apache-2.0 |
 | jsonptr (crate) | 0.7.1 | MIT OR Apache-2.0 |
 | keyboard-types (crate) | 0.8.3 | MIT OR Apache-2.0 |
-| keyring (crate) | 4.2.0 | MIT OR Apache-2.0 |
 | keyring-core (crate) | 1.0.1 | MIT OR Apache-2.0 |
 | libappindicator (crate) | 0.9.0 | Apache-2.0 OR MIT |
 | libappindicator-sys (crate) | 0.9.0 | Apache-2.0 OR MIT |
@@ -10087,7 +10086,7 @@ THE SOFTWARE.
 
 ### Text 131
 
-Applies to: keyring 4.2.0, keyring-core 1.0.1, zbus-secret-service-keyring-store 1.0.1
+Applies to: keyring-core 1.0.1, zbus-secret-service-keyring-store 1.0.1
 
 ```text
 Apache License
@@ -10295,7 +10294,7 @@ limitations under the License.
 
 ### Text 132
 
-Applies to: keyring 4.2.0, keyring-core 1.0.1, zbus-secret-service-keyring-store 1.0.1
+Applies to: keyring-core 1.0.1, zbus-secret-service-keyring-store 1.0.1
 
 ```text
 Copyright (c) 2016 keyring Developers

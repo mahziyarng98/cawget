@@ -15,8 +15,9 @@ use crate::error::{Error, Result};
 use crate::store::Job;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 /// The Secret Service collection/service name used for every keyring entry.
 pub const KEYRING_SERVICE: &str = crate::product_name!();
@@ -41,57 +42,210 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<()>;
 }
 
+/// How long one keyring call may take before it is abandoned. A locked keyring waiting
+/// for an unlock prompt, or a D-Bus activation that never completes, would otherwise
+/// block the caller for minutes.
+pub const KEYRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+const NO_SECRET_SERVICE: &str = "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)";
+
+type SsStore = zbus_secret_service_keyring_store::Store;
+type StoreSlot = Arc<Mutex<Option<Arc<SsStore>>>>;
+
 /// The real store: the Linux Secret Service (GNOME Keyring, KWallet, …) via
-/// the `keyring` crate.
-#[derive(Debug, Default)]
-pub struct KeyringSecretStore;
+/// `keyring-core` and its zbus Secret Service backend.
+///
+/// * The connection is opened lazily and only a *working* connection is cached: when
+///   no Secret Service is running, every call tries again, so credentials work as soon
+///   as the keyring appears (no restart needed). A cached connection that went stale
+///   (daemon restarted or gone) is dropped and reopened once.
+/// * Every call runs on a helper thread and is abandoned after a timeout with a clear
+///   [`Error::KeyringUnavailable`]. While an abandoned call is still hanging, further
+///   calls fail at once instead of piling up; they work again once it returns.
+pub struct KeyringSecretStore {
+    store: StoreSlot,
+    timeout: Duration,
+    /// Calls that timed out and whose helper thread has not returned yet.
+    stuck: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Debug for KeyringSecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyringSecretStore")
+            .field("timeout", &self.timeout)
+            .field("stuck", &self.stuck.load(Ordering::SeqCst))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for KeyringSecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runs `f` on a helper thread and waits at most `timeout` for it. A call that times out
+/// is counted in `stuck` until its thread returns; while any call is stuck, new calls fail
+/// at once.
+pub(crate) fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    stuck: &Arc<AtomicUsize>,
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    if stuck.load(Ordering::SeqCst) > 0 {
+        return Err(Error::KeyringUnavailable(
+            "the system keyring is not responding (an earlier request is still waiting, for example for an unlock prompt)".into(),
+        ));
+    }
+    let (tx, rx) = mpsc::sync_channel::<Result<T>>(1);
+    let abandoned = Arc::new(Mutex::new(false));
+    let (abandoned2, stuck2) = (Arc::clone(&abandoned), Arc::clone(stuck));
+    std::thread::Builder::new()
+        .name("cawget-keyring".into())
+        .spawn(move || {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .unwrap_or_else(|_| Err(Error::Keyring("keyring call panicked".into())));
+            let gone = abandoned2.lock().unwrap_or_else(|e| e.into_inner());
+            if *gone {
+                stuck2.fetch_sub(1, Ordering::SeqCst);
+            } else {
+                let _ = tx.send(r);
+            }
+        })
+        .map_err(|e| Error::Keyring(format!("cannot start the keyring thread: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(Error::Keyring("keyring call ended without a result".into()))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Holding the flag's lock, the helper cannot be between "finished" and "sent".
+            let mut gone = abandoned.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(r) = rx.try_recv() {
+                return r;
+            }
+            *gone = true;
+            stuck.fetch_add(1, Ordering::SeqCst);
+            Err(Error::KeyringUnavailable(format!(
+                "the system keyring did not answer within {} s (is an unlock prompt waiting?)",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
 
 impl KeyringSecretStore {
+    pub fn new() -> Self {
+        Self::with_timeout(KEYRING_TIMEOUT)
+    }
+
+    /// A store whose calls are abandoned after `timeout`.
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(None)),
+            timeout,
+            stuck: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     /// Maps a keyring error onto our error type. Store access problems (no
     /// daemon, locked keyring, sandbox denial) are surfaced as
     /// [`Error::KeyringUnavailable`].
-    fn map_error(e: keyring::Error) -> Error {
-        use keyring::Error as K;
+    fn map_error(e: keyring_core::Error) -> Error {
+        use keyring_core::Error as K;
         match e {
-            K::NoDefaultStore | K::NoStorageAccess(_) => Error::KeyringUnavailable(e.to_string()),
+            K::NoDefaultStore | K::NoStorageAccess(_) | K::PlatformFailure(_) => {
+                Error::KeyringUnavailable(e.to_string())
+            }
             other => Error::Keyring(other.to_string()),
         }
     }
 
-    fn entry(key: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, key).map_err(Self::map_error)
+    /// The cached connection, or a new one. Failures are never cached.
+    fn connect(slot: &StoreSlot, fresh: bool) -> Result<(Arc<SsStore>, bool)> {
+        if !fresh && let Some(s) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            return Ok((Arc::clone(s), true));
+        }
+        // Connect without holding the lock: this may block (it is bounded by the caller's timeout).
+        let s = SsStore::new().map_err(|e| match e {
+            keyring_core::Error::PlatformFailure(_) | keyring_core::Error::NoStorageAccess(_) => {
+                Error::KeyringUnavailable(format!("{NO_SECRET_SERVICE}: {e}"))
+            }
+            other => Self::map_error(other),
+        })?;
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&s));
+        Ok((s, false))
+    }
+
+    /// Runs `op` on the entry for `key`, reconnecting once when a cached connection
+    /// turned out to be stale.
+    fn with_entry<T>(
+        slot: &StoreSlot,
+        key: &str,
+        op: impl Fn(&keyring_core::Entry) -> keyring_core::Result<T>,
+    ) -> Result<T> {
+        use keyring_core::api::CredentialStoreApi;
+        let run = |s: &SsStore| s.build(KEYRING_SERVICE, key, None).and_then(|e| op(&e));
+        let (store, cached) = Self::connect(slot, false)?;
+        match run(&store) {
+            Ok(v) => Ok(v),
+            Err(keyring_core::Error::PlatformFailure(_)) if cached => {
+                let (store, _) = Self::connect(slot, true)?;
+                run(&store).map_err(|e| {
+                    if matches!(e, keyring_core::Error::PlatformFailure(_)) {
+                        *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    }
+                    Self::map_error(e)
+                })
+            }
+            Err(e) => {
+                if matches!(e, keyring_core::Error::PlatformFailure(_)) {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
+                Err(Self::map_error(e))
+            }
+        }
+    }
+
+    fn guarded<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&StoreSlot) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let slot = Arc::clone(&self.store);
+        run_with_timeout(self.timeout, &self.stuck, move || f(&slot))
     }
 }
 
 impl SecretStore for KeyringSecretStore {
     fn available(&self) -> bool {
-        keyring::Entry::store_status().is_ok()
+        self.guarded(|slot| Self::connect(slot, false).map(|_| ()))
+            .is_ok()
     }
 
     fn put(&self, key: &str, secret: &str) -> Result<()> {
-        if !self.available() {
-            return Err(Error::KeyringUnavailable(
-                "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-            ));
-        }
-        Self::entry(key)?
-            .set_password(secret)
-            .map_err(Self::map_error)
+        let (key, secret) = (key.to_string(), secret.to_string());
+        self.guarded(move |slot| Self::with_entry(slot, &key, |e| e.set_password(&secret)))
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
-        match Self::entry(key)?.get_password() {
-            Ok(s) => Ok(Some(s)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(Self::map_error(e)),
-        }
+        let key = key.to_string();
+        self.guarded(move |slot| {
+            Self::with_entry(slot, &key, |e| match e.get_password() {
+                Ok(s) => Ok(Some(s)),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(e) => Err(e),
+            })
+        })
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        match Self::entry(key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(Self::map_error(e)),
-        }
+        let key = key.to_string();
+        self.guarded(move |slot| {
+            Self::with_entry(slot, &key, |e| match e.delete_credential() {
+                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                Err(e) => Err(e),
+            })
+        })
     }
 }
 
@@ -105,6 +259,8 @@ pub struct MemorySecretStore {
     corrupt_once: AtomicBool,
     /// When true, `put` fails (simulates a store that cannot write).
     fail_puts: AtomicBool,
+    /// Every call sleeps this long first (simulates a hanging keyring).
+    delay_ms: AtomicUsize,
     secrets: Mutex<HashMap<String, String>>,
 }
 
@@ -139,6 +295,11 @@ impl MemorySecretStore {
         s
     }
 
+    /// Makes the store (un)available, like a keyring daemon stopping or starting.
+    pub fn set_available(&self, on: bool) {
+        self.available.store(on, Ordering::Relaxed);
+    }
+
     /// A store whose next `get` of a key returns a different value than stored
     /// (used to test read-back verification in the migration).
     pub fn corrupt_next_read(&self) {
@@ -150,7 +311,25 @@ impl MemorySecretStore {
         self.fail_puts.store(true, Ordering::Relaxed);
     }
 
+    /// Makes every call sleep `d` first (a hanging keyring; 0 = off).
+    pub fn delay(&self, d: Duration) {
+        self.delay_ms
+            .store(d.as_millis() as usize, Ordering::Relaxed);
+    }
+
+    /// Whether a secret is stored under `key` (bypasses availability, for assertions).
+    pub fn contains(&self, key: &str) -> bool {
+        self.secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(key)
+    }
+
     fn fail_if_unavailable(&self) -> Result<()> {
+        let ms = self.delay_ms.load(Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms as u64));
+        }
         if self.available.load(Ordering::Relaxed) {
             Ok(())
         } else {
@@ -163,7 +342,7 @@ impl MemorySecretStore {
 
 impl SecretStore for MemorySecretStore {
     fn available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        self.fail_if_unavailable().is_ok()
     }
 
     fn put(&self, key: &str, secret: &str) -> Result<()> {
@@ -570,6 +749,125 @@ mod tests {
         let json = serde_json::to_string(&secret).unwrap();
         let back: JobSecret = serde_json::from_str(&json).unwrap();
         assert_eq!(back, secret);
+    }
+
+    #[test]
+    fn timeout_runner_returns_results_and_abandons_hung_calls() {
+        let stuck = Arc::new(AtomicUsize::new(0));
+        let t = Duration::from_millis(200);
+        assert_eq!(run_with_timeout(t, &stuck, || Ok(7)).unwrap(), 7);
+
+        // A call that hangs is abandoned with a clear "unavailable" error…
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let err = run_with_timeout(t, &stuck, move || {
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(matches!(err, Error::KeyringUnavailable(_)), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(stuck.load(Ordering::SeqCst), 1);
+
+        // …and while it still hangs, further calls fail at once without a new thread.
+        let started = std::time::Instant::now();
+        let err = run_with_timeout(t, &stuck, || Ok(1)).unwrap_err();
+        assert!(err.to_string().contains("not responding"), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        // Once the hung call returns, the store works again.
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stuck.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(run_with_timeout(t, &stuck, || Ok(2)).unwrap(), 2);
+    }
+
+    #[test]
+    fn timeout_runner_survives_a_panicking_call() {
+        let stuck = Arc::new(AtomicUsize::new(0));
+        let r: Result<()> = run_with_timeout(Duration::from_secs(5), &stuck, || panic!("boom"));
+        assert!(matches!(r, Err(Error::Keyring(_))));
+        assert_eq!(stuck.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn userinfo_moves_into_an_authorization_header() {
+        let mut url = "https://us%20er:pa%3Ass%40@[::1]:8443/p%20q?a=b@c".to_string();
+        let mut headers = vec!["X-Other: 1".to_string()];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!(url, "https://[::1]:8443/p%20q?a=b@c");
+        assert_eq!(
+            headers[1],
+            crate::http::basic_auth_header("us er", "pa:ss@")
+        );
+        // An explicit Authorization header wins; the userinfo is still removed.
+        let mut url = "http://u:p@h/f".to_string();
+        let mut headers = vec!["authorization: Bearer t".to_string()];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!((url.as_str(), headers.len()), ("http://h/f", 1));
+        // No userinfo: unchanged.
+        let mut url = "http://h/a@b".to_string();
+        let mut headers = vec![];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!((url.as_str(), headers.len()), ("http://h/a@b", 0));
+    }
+
+    #[test]
+    fn debug_output_never_shows_secrets() {
+        let secret = JobSecret {
+            url: "http://alice:DbgPw-DUMMY@h/f".into(),
+            headers: vec!["Authorization: Basic DbgHdr-DUMMY".into()],
+            cookie: Some("sid=DbgCookie-DUMMY".into()),
+        };
+        let store = MemorySecretStore::new();
+        store.put("job-1", "DbgStored-DUMMY").unwrap();
+        let job = Job {
+            id: 1,
+            url: secret.url.clone(),
+            out_path: String::new(),
+            state: crate::store::State::Queued,
+            referer: Some("http://r:DbgRef-DUMMY@h/".into()),
+            user_agent: None,
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            sha256: None,
+            etag: None,
+            last_modified: None,
+            error: None,
+            size: None,
+            accept_ranges: false,
+            segments: 0,
+            created: 0,
+            not_before: 0,
+            secret_ref: String::new(),
+        };
+        let req = crate::AddRequest {
+            url: secret.url.clone(),
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            ..Default::default()
+        };
+        let new_job = crate::store::NewJob {
+            url: secret.url.clone(),
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            ..Default::default()
+        };
+        let settings = crate::Settings {
+            proxy: "http://p:DbgProxy-DUMMY@px:3128".into(),
+            ..Default::default()
+        };
+        let all = format!(
+            "{secret:?} {job:?} {req:?} {new_job:?} {store:?} {settings:?} {:?}",
+            KeyringSecretStore::new()
+        );
+        assert!(!all.contains("DUMMY"), "{all}");
+        assert!(
+            all.contains("alice:***@h") && all.contains("Authorization: ***"),
+            "{all}"
+        );
     }
 
     #[test]

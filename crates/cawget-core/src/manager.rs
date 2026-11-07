@@ -173,7 +173,7 @@ impl Manager {
     }
 
     pub fn with_store(store: Store) -> Manager {
-        Self::with_store_and_secrets_at(store, Arc::new(KeyringSecretStore), None)
+        Self::with_store_and_secrets_at(store, Arc::new(KeyringSecretStore::new()), None)
     }
 
     /// A manager with a custom secret store (tests use the in-memory mock).
