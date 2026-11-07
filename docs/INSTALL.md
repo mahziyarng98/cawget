@@ -98,6 +98,27 @@ Debian 11; on those, use the AppImage.
 
 To remove it: `sudo dnf remove cawget` (Fedora) or `sudo zypper remove cawget` (openSUSE).
 
+## Flatpak bundle
+
+A single-file Flatpak for x86_64. **Cawget is not on Flathub**; this bundle from the Releases page is the only
+Flatpak build. You need Flatpak installed and the Flathub remote added (the bundle uses the GNOME runtime from
+Flathub). It was built and tested on Arch Linux (Hyprland).
+
+```sh
+sha256sum -c cawget-0.1.0-x86_64.flatpak.sha256     # run in the folder with both downloaded files
+flatpak install --user cawget-0.1.0-x86_64.flatpak
+```
+
+Start **Cawget** from your application menu. To remove it:
+
+```sh
+flatpak uninstall --user io.github.mahziyarng98.cawget
+```
+
+Note: a Flatpak app started from a terminal with `flatpak run` stops when that terminal is closed. Start it from the
+application menu instead. The sandbox gives Cawget network access and your Downloads folder; its data lives under
+`~/.var/app/io.github.mahziyarng98.cawget/`.
+
 ## Arch Linux
 
 > **AUR package: coming soon (AUR registration is temporarily closed).** Until it is published, `yay -S cawget-bin`
