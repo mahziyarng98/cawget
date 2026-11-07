@@ -1,8 +1,9 @@
 <script lang="ts">
   // Dialog frame: title bar, body, button row. Escape closes, Tab stays inside, focus returns on close.
   // Never wider or taller than the window: the body scrolls, the button row wraps. The frame is a size container,
-  // so the contents can stack their form rows when the dialog itself is narrow.
+  // so the contents can stack their form rows when the dialog itself is narrow. The title bar moves the dialog.
   import { onMount, type Snippet } from "svelte";
+  import { draggable } from "./draggable";
   import Icon from "./Icon.svelte";
 
   let {
@@ -49,7 +50,7 @@
 </script>
 
 <div class="modal-scrim" role="presentation">
-  <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={el} style="inline-size:min({width}px, calc(100vw - 1rem))" onkeydown={key}>
+  <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={el} style:inline-size="min({width}px, calc(100vw - 1rem))" use:draggable={{ handle: ".modal-title" }} onkeydown={key}>
     <div class="modal-title">
       <span class="modal-title-text">{title}</span>
       <button class="icon-btn" aria-label="Close" onclick={onclose}><Icon name="close" size={14} /></button>
