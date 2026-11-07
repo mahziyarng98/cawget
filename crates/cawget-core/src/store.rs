@@ -44,7 +44,8 @@ impl State {
 }
 
 /// A download job as stored in the database. `None` means "not set / not known yet".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `Debug` hides credentials (URL userinfo, header values, cookie).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
     pub url: String,
@@ -75,7 +76,7 @@ pub struct Job {
 }
 
 /// A job row that still carries plaintext credentials in the database.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PlaintextJob {
     pub id: i64,
     pub url: String,
@@ -83,8 +84,64 @@ pub struct PlaintextJob {
     pub cookie: Option<String>,
 }
 
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("url", &mask_url(&self.url))
+            .field("out_path", &self.out_path)
+            .field("state", &self.state)
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("user_agent", &self.user_agent)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("secret_ref", &self.secret_ref)
+            .field("sha256", &self.sha256)
+            .field("etag", &self.etag)
+            .field("last_modified", &self.last_modified)
+            .field("error", &self.error)
+            .field("size", &self.size)
+            .field("accept_ranges", &self.accept_ranges)
+            .field("segments", &self.segments)
+            .field("created", &self.created)
+            .field("not_before", &self.not_before)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for PlaintextJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("PlaintextJob")
+            .field("id", &self.id)
+            .field("url", &mask_url(&self.url))
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for NewJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("NewJob")
+            .field("url", &mask_url(&self.url))
+            .field("out_path", &self.out_path)
+            .field("paused", &self.paused)
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("user_agent", &self.user_agent)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("sha256", &self.sha256)
+            .field("segments", &self.segments)
+            .field("not_before", &self.not_before)
+            .finish()
+    }
+}
+
 /// What the caller supplies when creating a job.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct NewJob {
     pub url: String,
     pub out_path: String,
@@ -110,6 +167,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   accept_ranges INTEGER NOT NULL DEFAULT 0, nseg INTEGER NOT NULL DEFAULT 0,
   created INTEGER NOT NULL DEFAULT 0, not_before INTEGER NOT NULL DEFAULT 0,
   secret_ref TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS keyring_pending(ref TEXT PRIMARY KEY, since INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS segments(
   job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, idx INTEGER NOT NULL,
   start INTEGER NOT NULL, end INTEGER NOT NULL, done INTEGER NOT NULL,
@@ -257,6 +315,147 @@ impl Store {
             ],
         )?;
         Ok(db.last_insert_rowid())
+    }
+
+    /// Inserts a job that will carry credentials: in one transaction the row gets its
+    /// keyring reference (`key_for(id)`) and the reference is marked pending, so that a
+    /// crash before the secret is stored can neither leave a row that downloads without
+    /// its login (the reference makes it fail clearly) nor an untracked keyring entry.
+    pub fn add_job_with_secret(
+        &self,
+        j: &NewJob,
+        created: i64,
+        key_for: impl Fn(i64) -> String,
+    ) -> Result<(i64, String)> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO jobs(url,out_path,state,referer,user_agent,headers,cookie,sha256,nseg,created,not_before)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                j.url,
+                j.out_path,
+                if j.paused { "paused" } else { "queued" },
+                j.referer.as_deref().unwrap_or(""),
+                j.user_agent.as_deref().unwrap_or(""),
+                j.headers.join("\n"),
+                j.cookie.as_deref().unwrap_or(""),
+                j.sha256.as_deref().unwrap_or(""),
+                j.segments,
+                created,
+                j.not_before,
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        let key = key_for(id);
+        tx.execute(
+            "UPDATE jobs SET secret_ref=?2 WHERE id=?1",
+            params![id, key],
+        )?;
+        tx.execute(
+            "INSERT INTO keyring_pending(ref,since) VALUES(?1,?2) ON CONFLICT(ref) DO UPDATE SET since=excluded.since",
+            params![key, created],
+        )?;
+        tx.commit()?;
+        Ok((id, key))
+    }
+
+    /// Deletes a job and, in the same transaction, marks its keyring reference pending,
+    /// so the keyring entry is removed later if deleting it now fails or never happens.
+    pub fn delete_job_marking_secret(&self, id: i64, secret_ref: &str, now: i64) -> Result<()> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        tx.execute("DELETE FROM jobs WHERE id=?1", [id])?;
+        if !secret_ref.is_empty() {
+            tx.execute(
+                "INSERT INTO keyring_pending(ref,since) VALUES(?1,?2) ON CONFLICT(ref) DO UPDATE SET since=excluded.since",
+                params![secret_ref, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes a setting and marks a keyring reference pending, in one transaction.
+    pub fn unset_setting_marking_secret(
+        &self,
+        key: &str,
+        secret_ref: &str,
+        now: i64,
+    ) -> Result<()> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        tx.execute("DELETE FROM settings WHERE key=?1", [key])?;
+        tx.execute(
+            "INSERT INTO keyring_pending(ref,since) VALUES(?1,?2) ON CONFLICT(ref) DO UPDATE SET since=excluded.since",
+            params![secret_ref, now],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// This database's keyring namespace: a random id created on first use and kept in
+    /// the settings, used as the prefix of every keyring key (see `secrets::job_key`).
+    pub fn keyring_namespace(&self) -> Result<String> {
+        const KEY: &str = "keyring.namespace";
+        if let Some(ns) = self.get_setting(KEY)? {
+            return Ok(ns);
+        }
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        h.update(now.as_nanos().to_le_bytes());
+        h.update(std::process::id().to_le_bytes());
+        h.update((self as *const Self as usize).to_le_bytes());
+        let ns: String = h
+            .finalize()
+            .iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        // Another process may create it at the same moment: the first one wins.
+        self.db().execute(
+            "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
+            params![KEY, format!("db-{ns}")],
+        )?;
+        Ok(self.get_setting(KEY)?.unwrap_or_default())
+    }
+
+    /// Marks a keyring reference as possibly out of sync with the database.
+    pub fn mark_secret_pending(&self, secret_ref: &str, now: i64) -> Result<()> {
+        self.db().execute(
+            "INSERT INTO keyring_pending(ref,since) VALUES(?1,?2) ON CONFLICT(ref) DO UPDATE SET since=excluded.since",
+            params![secret_ref, now],
+        )?;
+        Ok(())
+    }
+
+    /// The keyring and the database agree again for this reference.
+    pub fn clear_secret_pending(&self, secret_ref: &str) -> Result<()> {
+        self.db()
+            .execute("DELETE FROM keyring_pending WHERE ref=?1", [secret_ref])?;
+        Ok(())
+    }
+
+    /// Pending keyring references with the time they were marked.
+    pub fn pending_secrets(&self) -> Result<Vec<(String, i64)>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT ref,since FROM keyring_pending ORDER BY since")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Whether the database still refers to a keyring entry (a job's `secret_ref` or a
+    /// `keyring.*_ref` setting).
+    pub fn secret_referenced(&self, secret_ref: &str) -> Result<bool> {
+        Ok(self.db().query_row(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE secret_ref=?1)
+                 OR EXISTS(SELECT 1 FROM settings WHERE key LIKE 'keyring.%\\_ref' ESCAPE '\\' AND value=?1)",
+            [secret_ref],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn get_job(&self, id: i64) -> Result<Option<Job>> {

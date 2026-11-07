@@ -28,7 +28,8 @@ bytes = "1"
 sha2 = "0.11"
 dirs = "6"
 base64 = "0.22"
-keyring = "4.2"
+keyring-core = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

@@ -3,11 +3,22 @@
 //! in-memory mock stands in for it).
 
 use cawget_core::secrets::{
-    KeyringMigration, MemorySecretStore, SecretStore, job_key, migrate_plaintext_secrets,
+    KeyringMigration, MemorySecretStore, RECONCILE_MIN_AGE, SecretStore, job_key,
+    migrate_plaintext_secrets, reconcile_secrets,
 };
 use cawget_core::store::NewJob;
 use cawget_core::{AddRequest, Error, Manager, Store};
 use std::sync::Arc;
+
+/// The keyring key of job `id` in the database at `db`.
+fn jk(db: &std::path::Path, id: i64) -> String {
+    job_key(&Store::open(db).unwrap().keyring_namespace().unwrap(), id)
+}
+
+/// The keyring key of the proxy login of the database at `db`.
+fn pk(db: &std::path::Path) -> String {
+    cawget_core::secrets::proxy_key(&Store::open(db).unwrap().keyring_namespace().unwrap())
+}
 
 fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -135,7 +146,7 @@ fn migration_moves_job_and_proxy_credentials_to_the_secret_store() {
     }
     // The secrets are readable from the store.
     let s1: cawget_core::secrets::JobSecret =
-        serde_json::from_str(&secrets.get(&job_key(id1)).unwrap().unwrap()).unwrap();
+        serde_json::from_str(&secrets.get(&jk(&db, id1)).unwrap().unwrap()).unwrap();
     assert_eq!(s1.url, "http://example.org/file.bin");
     assert_eq!(
         s1.headers,
@@ -143,7 +154,7 @@ fn migration_moves_job_and_proxy_credentials_to_the_secret_store() {
     );
     assert_eq!(s1.cookie.as_deref(), Some("sid=1; secret=abc"));
     let s3: cawget_core::secrets::JobSecret =
-        serde_json::from_str(&secrets.get(&job_key(id3)).unwrap().unwrap()).unwrap();
+        serde_json::from_str(&secrets.get(&jk(&db, id3)).unwrap().unwrap()).unwrap();
     assert_eq!(s3.url, "http://user:pass@example.org/private");
     // Proxy: setting is sanitized, full URL is in the store.
     assert_eq!(
@@ -151,11 +162,11 @@ fn migration_moves_job_and_proxy_credentials_to_the_secret_store() {
         Some("http://proxy.example:3128")
     );
     assert_eq!(
-        store.get_setting("keyring.proxy_ref").unwrap().as_deref(),
-        Some("proxy")
+        store.get_setting("keyring.proxy_ref").unwrap(),
+        Some(pk(&db))
     );
     assert_eq!(
-        secrets.get("proxy").unwrap().as_deref(),
+        secrets.get(&pk(&db)).unwrap().as_deref(),
         Some("http://proxyuser:proxypass@proxy.example:3128")
     );
 
@@ -229,7 +240,7 @@ fn migration_with_a_failed_readback_keeps_that_row_plaintext() {
     let id1 = add_plaintext_job(&store, &["Authorization: Basic c2VjcmV0"], None);
     let id2 = add_plaintext_job(&store, &["X-Test: ok"], None);
     let secrets = FailGets::new();
-    secrets.fail_key(&job_key(id1));
+    secrets.fail_key(&jk(&db, id1));
 
     let outcome = migrate_plaintext_secrets(&store, &secrets, Some(&db));
     assert!(
@@ -339,21 +350,34 @@ fn manager_proxy_setting_roundtrip() {
 
     m.set_setting("proxy", "http://user:pass@proxy.example:3128")
         .unwrap();
-    // The database keeps the sanitized URL; settings() returns the full one.
+    // The database keeps the sanitized URL; settings() shows the login only masked.
     assert_eq!(
         m.store().get_setting("proxy").unwrap().as_deref(),
         Some("http://proxy.example:3128")
     );
-    assert_eq!(m.settings().proxy, "http://user:pass@proxy.example:3128");
+    assert_eq!(m.settings().proxy, "http://***@proxy.example:3128");
+    assert!(!format!("{:?}", m.settings()).contains("pass"));
+    // Giving the masked form back (an unchanged settings dialog) keeps the login.
+    m.set_setting("proxy", "http://***@proxy.example:3128")
+        .unwrap();
     assert_eq!(
-        secrets.get("proxy").unwrap().as_deref(),
+        secrets.get(&pk(&db)).unwrap().as_deref(),
+        Some("http://user:pass@proxy.example:3128")
+    );
+    // A masked form for another host is refused (the password must be entered again).
+    assert!(
+        m.set_setting("proxy", "http://***@other.example:3128")
+            .is_err()
+    );
+    assert_eq!(
+        secrets.get(&pk(&db)).unwrap().as_deref(),
         Some("http://user:pass@proxy.example:3128")
     );
 
     // A plain proxy clears the saved credentials.
     m.set_setting("proxy", "http://plain.example:3128").unwrap();
     assert_eq!(m.settings().proxy, "http://plain.example:3128");
-    assert!(secrets.get("proxy").unwrap().is_none());
+    assert!(secrets.get(&pk(&db)).unwrap().is_none());
     assert_eq!(m.store().get_setting("keyring.proxy_ref").unwrap(), None);
 
     // "none" and "" reset to system/direct.
@@ -380,7 +404,7 @@ fn job_with_credentials_is_not_runnable_before_its_secret_is_stored() {
         .unwrap();
     let job = m.store().require_job(id).unwrap();
     assert_eq!(job.state, cawget_core::State::Queued);
-    assert_eq!(job.secret_ref, job_key(id));
+    assert_eq!(job.secret_ref, jk(&db, id));
     assert!(secrets.get(&job.secret_ref).unwrap().is_some());
 
     // Paused add stays paused.
@@ -415,7 +439,7 @@ fn failed_add_leaves_no_keyring_entry_behind() {
     assert!(matches!(err, Error::Keyring(_)), "{err:?}");
     assert!(m.list().unwrap().is_empty());
     assert!(
-        secrets.get(&job_key(1)).unwrap().is_none(),
+        secrets.get(&jk(&db, 1)).unwrap().is_none(),
         "orphaned entry"
     );
 }
@@ -453,4 +477,293 @@ fn migration_leaves_no_plaintext_in_the_database_file_or_wal() {
             );
         }
     }
+}
+
+fn backups_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains(".pre-keyring-"))
+        .collect()
+}
+
+#[test]
+fn repeated_failed_migrations_reuse_one_private_backup() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let id1 = add_plaintext_job(&store, &["Authorization: Basic c2VjcmV0"], None);
+    let _id2 = add_plaintext_job(&store, &["X-Test: ok"], None);
+    let secrets = FailGets::new();
+    secrets.fail_key(&jk(&db, id1));
+
+    for _ in 0..3 {
+        let outcome = migrate_plaintext_secrets(&store, &secrets, Some(&db));
+        assert!(
+            matches!(outcome, KeyringMigration::Failed { .. }),
+            "{outcome:?}"
+        );
+    }
+    let backups = backups_in(tmp.path());
+    assert_eq!(backups.len(), 1, "one backup for all retries: {backups:?}");
+    let mode = std::fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    // The keyring works again: the retry completes with the same backup, which still
+    // holds the plaintext of every row (also the one that failed first).
+    secrets.fail_keys.lock().unwrap().clear();
+    match migrate_plaintext_secrets(&store, &secrets, Some(&db)) {
+        KeyringMigration::Migrated { backup, .. } => assert_eq!(backup.as_ref(), Some(&backups[0])),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(backups_in(tmp.path()).len(), 1);
+    let bytes = std::fs::read(&backups[0]).unwrap();
+    assert!(bytes.windows(14).any(|w| w == b"Basic c2VjcmV0"));
+    assert_eq!(
+        store
+            .get_setting(cawget_core::secrets::BACKUP_SETTING)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn manager_works_once_the_keyring_appears_without_a_restart() {
+    let (_tmp, db) = temp_db();
+    let secrets = Arc::new(MemorySecretStore::unavailable());
+    let m = Manager::with_store_and_secrets(Store::open(&db).unwrap(), secrets.clone());
+    let req = || AddRequest {
+        url: "http://example.org/f".into(),
+        headers: vec!["X-Test: dummy".into()],
+        ..Default::default()
+    };
+    assert!(matches!(m.add(req()), Err(Error::KeyringUnavailable(_))));
+    secrets.set_available(true); // the daemon started later
+    let id = m.add(req()).unwrap();
+    assert!(secrets.contains(&jk(&db, id)));
+}
+
+#[test]
+fn error_texts_never_contain_passwords() {
+    let (_tmp, db) = temp_db();
+    let m = Manager::with_store_and_secrets(
+        Store::open(&db).unwrap(),
+        Arc::new(MemorySecretStore::new()),
+    );
+    for bad in [
+        "http://alice:ErrPw-DUMMY@exa mple.org/f",
+        "http://alice:ErrPw-DUMMY@example.org:99999/f",
+    ] {
+        let e = m
+            .add(AddRequest {
+                url: bad.into(),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("ErrPw"), "{e}");
+    }
+    let e = m
+        .set_setting("proxy", "http://p:ErrProxy-DUMMY@px:99999")
+        .unwrap_err()
+        .to_string();
+    assert!(!e.contains("ErrProxy"), "{e}");
+}
+
+#[test]
+fn clearing_the_proxy_while_the_keyring_is_down_is_repaired_later() {
+    let (_tmp, db) = temp_db();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = Manager::with_store_and_secrets(Store::open(&db).unwrap(), secrets.clone());
+    m.set_setting("proxy", "http://u:ProxyPw-DUMMY@px:3128")
+        .unwrap();
+    secrets.set_available(false);
+    m.set_setting("proxy", "none").unwrap(); // must not fail because of the keyring
+    assert_eq!(m.store().get_setting("keyring.proxy_ref").unwrap(), None);
+    assert!(
+        secrets.contains(&pk(&db)),
+        "keyring was down, entry still there"
+    );
+    let pending = m.store().pending_secrets().unwrap();
+    assert_eq!(pending.len(), 1);
+
+    // Keyring back: reconciliation (old enough marks only) removes the orphan.
+    secrets.set_available(true);
+    let now = pending[0].1;
+    assert_eq!(
+        reconcile_secrets(m.store(), secrets.as_ref(), now, RECONCILE_MIN_AGE),
+        0
+    );
+    assert!(secrets.contains(&pk(&db)), "young marks are left alone");
+    assert_eq!(
+        reconcile_secrets(
+            m.store(),
+            secrets.as_ref(),
+            now + RECONCILE_MIN_AGE,
+            RECONCILE_MIN_AGE
+        ),
+        1
+    );
+    assert!(!secrets.contains(&pk(&db)));
+    assert!(m.store().pending_secrets().unwrap().is_empty());
+}
+
+#[test]
+fn removing_jobs_while_the_keyring_is_down_is_repaired_later() {
+    let (_tmp, db) = temp_db();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = Manager::with_store_and_secrets(Store::open(&db).unwrap(), secrets.clone());
+    let add = |paused| {
+        m.add(AddRequest {
+            url: "http://example.org/f".into(),
+            cookie: Some("sid=dummy".into()),
+            paused,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let (gone, kept) = (add(true), add(true));
+    secrets.set_available(false);
+    m.remove(gone, false).unwrap();
+    secrets.set_available(true);
+    let far = cawget_core::util::unix_now() + 3600;
+    assert_eq!(reconcile_secrets(m.store(), secrets.as_ref(), far, 0), 1);
+    assert!(!secrets.contains(&jk(&db, gone)));
+    assert!(secrets.contains(&jk(&db, kept)), "referenced entries stay");
+}
+
+#[test]
+fn crash_between_db_delete_and_keyring_delete_is_repaired_at_startup() {
+    let (_tmp, db) = temp_db();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let id = {
+        let m = Manager::with_store_and_secrets(Store::open(&db).unwrap(), secrets.clone());
+        m.add(AddRequest {
+            url: "http://u:CrashPw-DUMMY@example.org/f".into(),
+            paused: true,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    // Simulate the crash: the row and its pending mark are written, the keyring delete
+    // never happens.
+    let store = Store::open(&db).unwrap();
+    store
+        .delete_job_marking_secret(id, &jk(&db, id), 0)
+        .unwrap();
+    assert!(secrets.contains(&jk(&db, id)));
+    // Next start.
+    assert_eq!(
+        reconcile_secrets(
+            &store,
+            secrets.as_ref(),
+            RECONCILE_MIN_AGE,
+            RECONCILE_MIN_AGE
+        ),
+        1
+    );
+    assert!(!secrets.contains(&jk(&db, id)));
+}
+
+#[test]
+fn crash_before_the_secret_is_stored_never_downloads_without_login() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let ns = store.keyring_namespace().unwrap();
+    // The row is written with its reference and pending mark, then the process dies.
+    let (id, key) = store
+        .add_job_with_secret(
+            &NewJob {
+                url: "http://example.org/f".into(),
+                paused: true,
+                ..Default::default()
+            },
+            0,
+            |id| job_key(&ns, id),
+        )
+        .unwrap();
+    let secrets = MemorySecretStore::new();
+    let mut job = store.require_job(id).unwrap();
+    assert_eq!(job.secret_ref, key);
+    let e = cawget_core::secrets::hydrate_job(&mut job, &secrets).unwrap_err();
+    assert!(
+        e.to_string().contains("missing from the system keyring"),
+        "{e}"
+    );
+    // Reconciliation keeps the mark's entry decision to the reference: still referenced.
+    assert_eq!(reconcile_secrets(&store, &secrets, 100, 0), 0);
+    assert!(store.pending_secrets().unwrap().is_empty());
+}
+
+#[test]
+fn two_databases_never_share_keyring_entries() {
+    let (_t1, db1) = temp_db();
+    let (_t2, db2) = temp_db();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m1 = Manager::with_store_and_secrets(Store::open(&db1).unwrap(), secrets.clone());
+    let m2 = Manager::with_store_and_secrets(Store::open(&db2).unwrap(), secrets.clone());
+    let add = |m: &Manager, v: &str| {
+        m.add(AddRequest {
+            url: "http://example.org/f".into(),
+            headers: vec![format!("X-Test: {v}")],
+            paused: true,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let (a, b) = (add(&m1, "one"), add(&m2, "two"));
+    assert_eq!(a, b, "same row id in both databases");
+    assert_ne!(jk(&db1, a), jk(&db2, b));
+    // Removing (and reconciling) in one database leaves the other's entry alone.
+    m1.remove(a, false).unwrap();
+    let far = cawget_core::util::unix_now() + 3600;
+    reconcile_secrets(m1.store(), secrets.as_ref(), far, 0);
+    let mut j = m2.store().require_job(b).unwrap();
+    cawget_core::secrets::hydrate_job(&mut j, secrets.as_ref()).unwrap();
+    assert_eq!(j.headers, vec!["X-Test: two"]);
+}
+
+#[test]
+fn rows_with_keys_from_earlier_versions_still_work() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let id = add_plaintext_job(&store, &[], None);
+    // PR #10 wrote un-namespaced keys ("job-<id>"); the row keeps its exact key.
+    store
+        .set_credentials(id, "http://example.org/file.bin", &[], None, "job-1")
+        .unwrap();
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets
+        .put(
+            "job-1",
+            r#"{"url":"http://example.org/file.bin","headers":["X-Old: 1"],"cookie":null}"#,
+        )
+        .unwrap();
+    let m = Manager::with_store_and_secrets(store, secrets.clone());
+    let mut j = m.store().require_job(id).unwrap();
+    cawget_core::secrets::hydrate_job(&mut j, secrets.as_ref()).unwrap();
+    assert_eq!(j.headers, vec!["X-Old: 1"]);
+    m.remove(id, false).unwrap();
+    assert!(!secrets.contains("job-1"));
+}
+
+#[test]
+fn a_new_proxy_login_removes_one_saved_under_an_older_key() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let secrets = Arc::new(MemorySecretStore::new());
+    // As written by PR #10: un-namespaced key "proxy".
+    secrets
+        .put("proxy", "http://u:OldPw-DUMMY@old:3128")
+        .unwrap();
+    store.set_setting("proxy", "http://old:3128").unwrap();
+    store.set_setting("keyring.proxy_ref", "proxy").unwrap();
+    let m = Manager::with_store_and_secrets(store, secrets.clone());
+    m.set_setting("proxy", "http://u:NewPw-DUMMY@new:3128")
+        .unwrap();
+    assert!(!secrets.contains("proxy"), "old entry must go");
+    assert_eq!(
+        secrets.get(&pk(&db)).unwrap().as_deref(),
+        Some("http://u:NewPw-DUMMY@new:3128")
+    );
 }

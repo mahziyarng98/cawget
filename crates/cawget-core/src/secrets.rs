@@ -15,8 +15,9 @@ use crate::error::{Error, Result};
 use crate::store::Job;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 /// The Secret Service collection/service name used for every keyring entry.
 pub const KEYRING_SERVICE: &str = crate::product_name!();
@@ -41,63 +42,216 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<()>;
 }
 
+/// How long one keyring call may take before it is abandoned. A locked keyring waiting
+/// for an unlock prompt, or a D-Bus activation that never completes, would otherwise
+/// block the caller for minutes.
+pub const KEYRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+const NO_SECRET_SERVICE: &str = "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)";
+
+type SsStore = zbus_secret_service_keyring_store::Store;
+type StoreSlot = Arc<Mutex<Option<Arc<SsStore>>>>;
+
 /// The real store: the Linux Secret Service (GNOME Keyring, KWallet, …) via
-/// the `keyring` crate.
-#[derive(Debug, Default)]
-pub struct KeyringSecretStore;
+/// `keyring-core` and its zbus Secret Service backend.
+///
+/// * The connection is opened lazily and only a *working* connection is cached: when
+///   no Secret Service is running, every call tries again, so credentials work as soon
+///   as the keyring appears (no restart needed). A cached connection that went stale
+///   (daemon restarted or gone) is dropped and reopened once.
+/// * Every call runs on a helper thread and is abandoned after a timeout with a clear
+///   [`Error::KeyringUnavailable`]. While an abandoned call is still hanging, further
+///   calls fail at once instead of piling up; they work again once it returns.
+pub struct KeyringSecretStore {
+    store: StoreSlot,
+    timeout: Duration,
+    /// Calls that timed out and whose helper thread has not returned yet.
+    stuck: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Debug for KeyringSecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyringSecretStore")
+            .field("timeout", &self.timeout)
+            .field("stuck", &self.stuck.load(Ordering::SeqCst))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for KeyringSecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runs `f` on a helper thread and waits at most `timeout` for it. A call that times out
+/// is counted in `stuck` until its thread returns; while any call is stuck, new calls fail
+/// at once.
+pub(crate) fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    stuck: &Arc<AtomicUsize>,
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    if stuck.load(Ordering::SeqCst) > 0 {
+        return Err(Error::KeyringUnavailable(
+            "the system keyring is not responding (an earlier request is still waiting, for example for an unlock prompt)".into(),
+        ));
+    }
+    let (tx, rx) = mpsc::sync_channel::<Result<T>>(1);
+    let abandoned = Arc::new(Mutex::new(false));
+    let (abandoned2, stuck2) = (Arc::clone(&abandoned), Arc::clone(stuck));
+    std::thread::Builder::new()
+        .name("cawget-keyring".into())
+        .spawn(move || {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .unwrap_or_else(|_| Err(Error::Keyring("keyring call panicked".into())));
+            let gone = abandoned2.lock().unwrap_or_else(|e| e.into_inner());
+            if *gone {
+                stuck2.fetch_sub(1, Ordering::SeqCst);
+            } else {
+                let _ = tx.send(r);
+            }
+        })
+        .map_err(|e| Error::Keyring(format!("cannot start the keyring thread: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(Error::Keyring("keyring call ended without a result".into()))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Holding the flag's lock, the helper cannot be between "finished" and "sent".
+            let mut gone = abandoned.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(r) = rx.try_recv() {
+                return r;
+            }
+            *gone = true;
+            stuck.fetch_add(1, Ordering::SeqCst);
+            Err(Error::KeyringUnavailable(format!(
+                "the system keyring did not answer within {} s (is an unlock prompt waiting?)",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
 
 impl KeyringSecretStore {
+    pub fn new() -> Self {
+        Self::with_timeout(KEYRING_TIMEOUT)
+    }
+
+    /// A store whose calls are abandoned after `timeout`.
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(None)),
+            timeout,
+            stuck: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     /// Maps a keyring error onto our error type. Store access problems (no
     /// daemon, locked keyring, sandbox denial) are surfaced as
     /// [`Error::KeyringUnavailable`].
-    fn map_error(e: keyring::Error) -> Error {
-        use keyring::Error as K;
+    fn map_error(e: keyring_core::Error) -> Error {
+        use keyring_core::Error as K;
         match e {
-            K::NoDefaultStore | K::NoStorageAccess(_) => Error::KeyringUnavailable(e.to_string()),
+            K::NoDefaultStore | K::NoStorageAccess(_) | K::PlatformFailure(_) => {
+                Error::KeyringUnavailable(e.to_string())
+            }
             other => Error::Keyring(other.to_string()),
         }
     }
 
-    fn entry(key: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, key).map_err(Self::map_error)
+    /// The cached connection, or a new one. Failures are never cached.
+    fn connect(slot: &StoreSlot, fresh: bool) -> Result<(Arc<SsStore>, bool)> {
+        if !fresh && let Some(s) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            return Ok((Arc::clone(s), true));
+        }
+        // Connect without holding the lock: this may block (it is bounded by the caller's timeout).
+        let s = SsStore::new().map_err(|e| match e {
+            keyring_core::Error::PlatformFailure(_) | keyring_core::Error::NoStorageAccess(_) => {
+                Error::KeyringUnavailable(format!("{NO_SECRET_SERVICE}: {e}"))
+            }
+            other => Self::map_error(other),
+        })?;
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&s));
+        Ok((s, false))
+    }
+
+    /// Runs `op` on the entry for `key`, reconnecting once when a cached connection
+    /// turned out to be stale.
+    fn with_entry<T>(
+        slot: &StoreSlot,
+        key: &str,
+        op: impl Fn(&keyring_core::Entry) -> keyring_core::Result<T>,
+    ) -> Result<T> {
+        use keyring_core::api::CredentialStoreApi;
+        let run = |s: &SsStore| s.build(KEYRING_SERVICE, key, None).and_then(|e| op(&e));
+        let (store, cached) = Self::connect(slot, false)?;
+        match run(&store) {
+            Ok(v) => Ok(v),
+            Err(keyring_core::Error::PlatformFailure(_)) if cached => {
+                let (store, _) = Self::connect(slot, true)?;
+                run(&store).map_err(|e| {
+                    if matches!(e, keyring_core::Error::PlatformFailure(_)) {
+                        *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    }
+                    Self::map_error(e)
+                })
+            }
+            Err(e) => {
+                if matches!(e, keyring_core::Error::PlatformFailure(_)) {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
+                Err(Self::map_error(e))
+            }
+        }
+    }
+
+    fn guarded<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&StoreSlot) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let slot = Arc::clone(&self.store);
+        run_with_timeout(self.timeout, &self.stuck, move || f(&slot))
     }
 }
 
 impl SecretStore for KeyringSecretStore {
     fn available(&self) -> bool {
-        keyring::Entry::store_status().is_ok()
+        self.guarded(|slot| Self::connect(slot, false).map(|_| ()))
+            .is_ok()
     }
 
     fn put(&self, key: &str, secret: &str) -> Result<()> {
-        if !self.available() {
-            return Err(Error::KeyringUnavailable(
-                "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-            ));
-        }
-        Self::entry(key)?
-            .set_password(secret)
-            .map_err(Self::map_error)
+        let (key, secret) = (key.to_string(), secret.to_string());
+        self.guarded(move |slot| Self::with_entry(slot, &key, |e| e.set_password(&secret)))
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
-        match Self::entry(key)?.get_password() {
-            Ok(s) => Ok(Some(s)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(Self::map_error(e)),
-        }
+        let key = key.to_string();
+        self.guarded(move |slot| {
+            Self::with_entry(slot, &key, |e| match e.get_password() {
+                Ok(s) => Ok(Some(s)),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(e) => Err(e),
+            })
+        })
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        match Self::entry(key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(Self::map_error(e)),
-        }
+        let key = key.to_string();
+        self.guarded(move |slot| {
+            Self::with_entry(slot, &key, |e| match e.delete_credential() {
+                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                Err(e) => Err(e),
+            })
+        })
     }
 }
 
 /// In-memory mock for tests. Can be made unavailable, or made to fail / corrupt
-/// reads, to exercise the error paths.
-#[derive(Debug, Default)]
+/// reads, to exercise the error paths. Its `Debug` never shows the secrets.
+#[derive(Default)]
 pub struct MemorySecretStore {
     available: AtomicBool,
     /// When true, `get` returns a changed value the first time it is called for
@@ -105,17 +259,32 @@ pub struct MemorySecretStore {
     corrupt_once: AtomicBool,
     /// When true, `put` fails (simulates a store that cannot write).
     fail_puts: AtomicBool,
+    /// Every call sleeps this long first (simulates a hanging keyring).
+    delay_ms: AtomicUsize,
     secrets: Mutex<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for MemorySecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys: Vec<String> = self
+            .secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        f.debug_struct("MemorySecretStore")
+            .field("available", &self.available.load(Ordering::Relaxed))
+            .field("keys", &keys)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemorySecretStore {
     pub fn new() -> Self {
-        Self {
-            available: AtomicBool::new(true),
-            corrupt_once: AtomicBool::new(false),
-            fail_puts: AtomicBool::new(false),
-            secrets: Mutex::new(HashMap::new()),
-        }
+        let s = Self::default();
+        s.available.store(true, Ordering::Relaxed);
+        s
     }
 
     /// A store that is present but refuses every operation (like a keyring
@@ -124,6 +293,11 @@ impl MemorySecretStore {
         let s = Self::new();
         s.available.store(false, Ordering::Relaxed);
         s
+    }
+
+    /// Makes the store (un)available, like a keyring daemon stopping or starting.
+    pub fn set_available(&self, on: bool) {
+        self.available.store(on, Ordering::Relaxed);
     }
 
     /// A store whose next `get` of a key returns a different value than stored
@@ -137,7 +311,25 @@ impl MemorySecretStore {
         self.fail_puts.store(true, Ordering::Relaxed);
     }
 
+    /// Makes every call sleep `d` first (a hanging keyring; 0 = off).
+    pub fn delay(&self, d: Duration) {
+        self.delay_ms
+            .store(d.as_millis() as usize, Ordering::Relaxed);
+    }
+
+    /// Whether a secret is stored under `key` (bypasses availability, for assertions).
+    pub fn contains(&self, key: &str) -> bool {
+        self.secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(key)
+    }
+
     fn fail_if_unavailable(&self) -> Result<()> {
+        let ms = self.delay_ms.load(Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms as u64));
+        }
         if self.available.load(Ordering::Relaxed) {
             Ok(())
         } else {
@@ -150,7 +342,7 @@ impl MemorySecretStore {
 
 impl SecretStore for MemorySecretStore {
     fn available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        self.fail_if_unavailable().is_ok()
     }
 
     fn put(&self, key: &str, secret: &str) -> Result<()> {
@@ -187,7 +379,7 @@ impl SecretStore for MemorySecretStore {
 
 /// Everything secret about one queued job, stored as a JSON blob in the
 /// keyring under the job's reference.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobSecret {
     /// The address as entered, including any `user:password@` userinfo.
     pub url: String,
@@ -198,13 +390,30 @@ pub struct JobSecret {
     pub cookie: Option<String>,
 }
 
-/// The keyring key for a job's secret.
-pub fn job_key(id: i64) -> SecretRef {
-    format!("job-{id}")
+impl std::fmt::Debug for JobSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobSecret")
+            .field("url", &crate::redact::mask_url(&self.url))
+            .field("headers", &crate::redact::RedactedHeaders(&self.headers))
+            .field("cookie", &crate::redact::opt_secret(&self.cookie))
+            .finish()
+    }
 }
 
-/// The keyring key for the proxy credentials.
-pub const PROXY_KEY: &str = "proxy";
+/// The keyring key for a job's secret.
+///
+/// Keys are prefixed with the database's keyring namespace
+/// ([`Store::keyring_namespace`]), so several databases (`--db`, a migrated old
+/// queue) never share or delete each other's entries. Rows store their exact key, so
+/// keys written without a namespace by earlier versions keep working.
+pub fn job_key(namespace: &str, id: i64) -> SecretRef {
+    format!("{namespace}/job-{id}")
+}
+
+/// The keyring key for the proxy credentials of a database (see [`job_key`]).
+pub fn proxy_key(namespace: &str) -> SecretRef {
+    format!("{namespace}/proxy")
+}
 
 /// Whether a URL carries userinfo (`user:password@host`).
 pub fn url_has_userinfo(url: &str) -> bool {
@@ -217,22 +426,62 @@ pub fn url_has_userinfo(url: &str) -> bool {
 /// (no normalization, no added trailing slash). Returns the URL unchanged when it
 /// has no userinfo.
 pub fn strip_url_userinfo(url: &str) -> Result<String> {
-    let u = reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {url}: {e}")))?;
+    let shown = crate::redact::mask_url(url);
+    let u =
+        reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {shown}: {e}")))?;
     if u.username().is_empty() {
         return Ok(url.to_string());
     }
     let Some(scheme_end) = url.find("://") else {
-        return Err(Error::invalid(format!("bad URL {url}")));
+        return Err(Error::invalid(format!("bad URL {shown}")));
     };
     let after_scheme = &url[scheme_end + 3..];
     let Some(at) = after_scheme.find('@') else {
-        return Err(Error::invalid(format!("bad URL {url}")));
+        return Err(Error::invalid(format!("bad URL {shown}")));
     };
     Ok(format!(
         "{}{}",
         &url[..scheme_end + 3],
         &after_scheme[at + 1..]
     ))
+}
+
+/// Splits the userinfo off a URL: the URL without it, and an `Authorization: Basic`
+/// header line built from the (percent-decoded) user name and password. URLs without
+/// userinfo come back unchanged with `None`.
+pub fn userinfo_to_basic_auth(url: &str) -> Result<(String, Option<String>)> {
+    let shown = crate::redact::mask_url(url);
+    let u =
+        reqwest::Url::parse(url).map_err(|e| Error::invalid(format!("bad URL {shown}: {e}")))?;
+    if u.username().is_empty() && u.password().is_none() {
+        return Ok((url.to_string(), None));
+    }
+    let decode = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    let header =
+        crate::http::basic_auth_header(&decode(u.username()), &decode(u.password().unwrap_or("")));
+    Ok((strip_url_userinfo(url)?, Some(header)))
+}
+
+/// Moves URL userinfo into an `Authorization` header (unless the job already has one),
+/// so that it is sent with the probe *and* every segment request, and so that the URL
+/// used for requests, redirects, logs and errors carries no password.
+pub fn userinfo_into_headers(url: &mut String, headers: &mut Vec<String>) -> Result<()> {
+    let (plain, auth) = userinfo_to_basic_auth(url)?;
+    if let Some(auth) = auth {
+        let has_auth = headers.iter().any(|h| {
+            h.split_once(':')
+                .is_some_and(|(n, _)| n.trim().eq_ignore_ascii_case("authorization"))
+        });
+        if !has_auth {
+            headers.push(auth);
+        }
+        *url = plain;
+    }
+    Ok(())
 }
 
 /// Whether a job row still carries plaintext credentials in the database.
@@ -260,6 +509,48 @@ pub fn hydrate_job(job: &mut Job, secrets: &dyn SecretStore) -> Result<()> {
     job.headers = secret.headers;
     job.cookie = secret.cookie;
     Ok(())
+}
+
+// ---- keeping the keyring in step with the database ----
+
+/// Pending references younger than this (seconds) are left alone by a reconciliation:
+/// they may belong to an add or remove still in progress in another process.
+pub const RECONCILE_MIN_AGE: i64 = 30;
+
+/// Best-effort repair of keyring entries that may be out of step with the database.
+///
+/// Every operation that could leave a keyring entry without a database reference
+/// (adding a job with a login, removing such a job, clearing the proxy login) first
+/// marks the entry's deterministic reference as pending in the same transaction as the
+/// database change, and clears the mark when the keyring part succeeded. Here, each
+/// pending reference older than `min_age` is checked: if the database still refers to
+/// it the entry is kept, otherwise it is deleted. Marks stay when the keyring is
+/// unavailable, so the next attempt finishes the job. Returns the entries removed.
+pub fn reconcile_secrets(db: &Store, secrets: &dyn SecretStore, now: i64, min_age: i64) -> usize {
+    let Ok(pending) = db.pending_secrets() else {
+        return 0;
+    };
+    let mut removed = 0;
+    for (r, since) in pending {
+        if now - since < min_age {
+            continue;
+        }
+        match db.secret_referenced(&r) {
+            Ok(true) => {
+                let _ = db.clear_secret_pending(&r);
+            }
+            Ok(false) => match secrets.delete(&r) {
+                Ok(()) => {
+                    let _ = db.clear_secret_pending(&r);
+                    removed += 1;
+                }
+                // The keyring is down or hanging: stop, the marks stay for next time.
+                Err(_) => break,
+            },
+            Err(_) => {}
+        }
+    }
+    removed
 }
 
 // ---- migration of existing plaintext data ----
@@ -324,7 +615,19 @@ impl KeyringMigration {
     }
 }
 
-/// Copies the database to a private, timestamped backup next to it.
+/// Setting that remembers the backup of an unfinished migration, so a retry reuses it
+/// instead of writing another copy of the plaintext.
+pub const BACKUP_SETTING: &str = "keyring.migration_backup";
+
+/// The backup of an earlier, unfinished migration attempt, if it still exists.
+fn previous_backup(db: &Store) -> Option<PathBuf> {
+    let p = PathBuf::from(db.get_setting(BACKUP_SETTING).ok()??);
+    p.is_file().then_some(p)
+}
+
+/// Copies the database to a private, timestamped backup next to it. The file is created
+/// empty with mode 0600 first (never readable by others, whatever the umask), then
+/// filled by `VACUUM INTO`, which accepts an existing empty file.
 fn backup_database(db_path: &Path) -> Result<PathBuf> {
     let dir = db_path
         .parent()
@@ -336,12 +639,25 @@ fn backup_database(db_path: &Path) -> Result<PathBuf> {
         .to_string_lossy();
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     let dest = dir.join(format!("{name}.pre-keyring-{stamp}.bak"));
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&dest)?;
+    }
     let quoted = dest.to_string_lossy().replace('\'', "''");
-    let conn = rusqlite::Connection::open(db_path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
-    drop(conn);
-    crate::paths::set_private_file_mode(&dest)?;
+    let filled = (|| -> Result<()> {
+        let conn = rusqlite::Connection::open(db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
+        Ok(())
+    })();
+    if let Err(e) = filled {
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
     Ok(dest)
 }
 
@@ -390,18 +706,37 @@ pub fn migrate_plaintext_secrets(
             message: "no Secret Service is running (GNOME Keyring / KWallet) or the app is sandboxed without permission".into(),
         };
     }
-    let backup = match db_path {
-        Some(p) => match backup_database(p) {
-            Ok(b) => Some(b),
+    // A retry after a partial failure keeps using the first backup: it already holds
+    // every credential that is still left to migrate.
+    let backup = match (db_path, previous_backup(db)) {
+        (_, Some(b)) => Some(b),
+        (Some(p), None) => match backup_database(p) {
+            Ok(b) => {
+                if let Err(e) = db.set_setting(BACKUP_SETTING, &b.to_string_lossy()) {
+                    return KeyringMigration::Failed {
+                        error: e.to_string(),
+                    };
+                }
+                Some(b)
+            }
             Err(e) => {
                 return KeyringMigration::Failed {
                     error: e.to_string(),
                 };
             }
         },
-        None => None,
+        (None, None) => None,
     };
 
+    let ns = match db.keyring_namespace() {
+        Ok(ns) => ns,
+        Err(e) => {
+            return KeyringMigration::Failed {
+                error: e.to_string(),
+            };
+        }
+    };
+    let proxy_ref = proxy_key(&ns);
     let mut migrated_jobs = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for j in &jobs {
@@ -417,7 +752,7 @@ pub fn migrate_plaintext_secrets(
                 continue;
             }
         };
-        let key = job_key(j.id);
+        let key = job_key(&ns, j.id);
         if let Err(e) = secrets.put(&key, &json) {
             failures.push(format!("storing credentials of job {}: {e}", j.id));
             continue;
@@ -454,11 +789,11 @@ pub fn migrate_plaintext_secrets(
     let mut migrated_proxy = false;
     if let Some(full) = &proxy {
         let mut proxy_failed = false;
-        if let Err(e) = secrets.put(PROXY_KEY, full) {
+        if let Err(e) = secrets.put(&proxy_ref, full) {
             proxy_failed = true;
             failures.push(format!("storing proxy credentials: {e}"));
         } else {
-            match secrets.get(PROXY_KEY) {
+            match secrets.get(&proxy_ref) {
                 Ok(Some(v)) if v == *full => {}
                 Ok(_) => {
                     proxy_failed = true;
@@ -476,7 +811,7 @@ pub fn migrate_plaintext_secrets(
         if !proxy_failed {
             match strip_url_userinfo(full).and_then(|url| {
                 db.set_setting("proxy", &url)
-                    .and_then(|()| db.set_setting("keyring.proxy_ref", PROXY_KEY))
+                    .and_then(|()| db.set_setting("keyring.proxy_ref", &proxy_ref))
             }) {
                 Ok(()) => migrated_proxy = true,
                 Err(e) => failures.push(e.to_string()),
@@ -491,9 +826,11 @@ pub fn migrate_plaintext_secrets(
 
     if !failures.is_empty() {
         return KeyringMigration::Failed {
-            error: failures.join("; "),
+            error: crate::redact::redact_text(&failures.join("; ")),
         };
     }
+    // Done: a later migration (should one ever be needed) starts with a fresh backup.
+    let _ = db.unset_setting(BACKUP_SETTING);
 
     KeyringMigration::Migrated {
         jobs: migrated_jobs,
@@ -558,6 +895,125 @@ mod tests {
     }
 
     #[test]
+    fn timeout_runner_returns_results_and_abandons_hung_calls() {
+        let stuck = Arc::new(AtomicUsize::new(0));
+        let t = Duration::from_millis(200);
+        assert_eq!(run_with_timeout(t, &stuck, || Ok(7)).unwrap(), 7);
+
+        // A call that hangs is abandoned with a clear "unavailable" error…
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let err = run_with_timeout(t, &stuck, move || {
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(matches!(err, Error::KeyringUnavailable(_)), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(stuck.load(Ordering::SeqCst), 1);
+
+        // …and while it still hangs, further calls fail at once without a new thread.
+        let started = std::time::Instant::now();
+        let err = run_with_timeout(t, &stuck, || Ok(1)).unwrap_err();
+        assert!(err.to_string().contains("not responding"), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        // Once the hung call returns, the store works again.
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stuck.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(run_with_timeout(t, &stuck, || Ok(2)).unwrap(), 2);
+    }
+
+    #[test]
+    fn timeout_runner_survives_a_panicking_call() {
+        let stuck = Arc::new(AtomicUsize::new(0));
+        let r: Result<()> = run_with_timeout(Duration::from_secs(5), &stuck, || panic!("boom"));
+        assert!(matches!(r, Err(Error::Keyring(_))));
+        assert_eq!(stuck.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn userinfo_moves_into_an_authorization_header() {
+        let mut url = "https://us%20er:pa%3Ass%40@[::1]:8443/p%20q?a=b@c".to_string();
+        let mut headers = vec!["X-Other: 1".to_string()];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!(url, "https://[::1]:8443/p%20q?a=b@c");
+        assert_eq!(
+            headers[1],
+            crate::http::basic_auth_header("us er", "pa:ss@")
+        );
+        // An explicit Authorization header wins; the userinfo is still removed.
+        let mut url = "http://u:p@h/f".to_string();
+        let mut headers = vec!["authorization: Bearer t".to_string()];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!((url.as_str(), headers.len()), ("http://h/f", 1));
+        // No userinfo: unchanged.
+        let mut url = "http://h/a@b".to_string();
+        let mut headers = vec![];
+        userinfo_into_headers(&mut url, &mut headers).unwrap();
+        assert_eq!((url.as_str(), headers.len()), ("http://h/a@b", 0));
+    }
+
+    #[test]
+    fn debug_output_never_shows_secrets() {
+        let secret = JobSecret {
+            url: "http://alice:DbgPw-DUMMY@h/f".into(),
+            headers: vec!["Authorization: Basic DbgHdr-DUMMY".into()],
+            cookie: Some("sid=DbgCookie-DUMMY".into()),
+        };
+        let store = MemorySecretStore::new();
+        store.put("job-1", "DbgStored-DUMMY").unwrap();
+        let job = Job {
+            id: 1,
+            url: secret.url.clone(),
+            out_path: String::new(),
+            state: crate::store::State::Queued,
+            referer: Some("http://r:DbgRef-DUMMY@h/".into()),
+            user_agent: None,
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            sha256: None,
+            etag: None,
+            last_modified: None,
+            error: None,
+            size: None,
+            accept_ranges: false,
+            segments: 0,
+            created: 0,
+            not_before: 0,
+            secret_ref: String::new(),
+        };
+        let req = crate::AddRequest {
+            url: secret.url.clone(),
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            ..Default::default()
+        };
+        let new_job = crate::store::NewJob {
+            url: secret.url.clone(),
+            headers: secret.headers.clone(),
+            cookie: secret.cookie.clone(),
+            ..Default::default()
+        };
+        let settings = crate::Settings {
+            proxy: "http://p:DbgProxy-DUMMY@px:3128".into(),
+            ..Default::default()
+        };
+        let all = format!(
+            "{secret:?} {job:?} {req:?} {new_job:?} {store:?} {settings:?} {:?}",
+            KeyringSecretStore::new()
+        );
+        assert!(!all.contains("DUMMY"), "{all}");
+        assert!(
+            all.contains("alice:***@h") && all.contains("Authorization: ***"),
+            "{all}"
+        );
+    }
+
+    #[test]
     fn hydrate_job_fills_fields_and_skips_empty_ref() {
         let s = MemorySecretStore::new();
         let mut job = Job {
@@ -583,7 +1039,7 @@ mod tests {
         hydrate_job(&mut job, &s).unwrap();
         assert!(job.headers.is_empty());
 
-        job.secret_ref = job_key(1);
+        job.secret_ref = job_key("t", 1);
         s.put(
             &job.secret_ref,
             &serde_json::to_string(&JobSecret {
@@ -600,7 +1056,7 @@ mod tests {
         assert_eq!(job.cookie.as_deref(), Some("sid=1"));
 
         // Missing entry is a clear error, never silent.
-        job.secret_ref = job_key(99);
+        job.secret_ref = job_key("t", 99);
         assert!(matches!(hydrate_job(&mut job, &s), Err(Error::Keyring(_))));
     }
 }

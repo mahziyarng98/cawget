@@ -24,6 +24,14 @@ use tokio::sync::{Notify, broadcast};
 use tokio::time::{Duration, Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
+/// Setting that holds the keyring reference of the saved proxy login.
+const PROXY_REF_SETTING: &str = "keyring.proxy_ref";
+const NO_KEYRING: &str = "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)";
+/// How long a job whose credentials could not be read waits before the next attempt.
+const KEYRING_RETRY: Duration = Duration::from_secs(5);
+/// How often the scheduler retries removing keyring entries left behind.
+const RECONCILE_EVERY: Duration = Duration::from_secs(60);
+
 /// Notifications for UIs and logs.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -50,7 +58,7 @@ pub struct JobView {
 }
 
 /// What to add to the queue.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AddRequest {
     pub url: String,
     /// Exact output file (takes precedence over `dir`).
@@ -65,6 +73,25 @@ pub struct AddRequest {
     /// Unix time to start at (0 = now).
     pub not_before: i64,
     pub paused: bool,
+}
+
+impl std::fmt::Debug for AddRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::redact::{RedactedHeaders, mask_url, opt_secret};
+        f.debug_struct("AddRequest")
+            .field("url", &mask_url(&self.url))
+            .field("output", &self.output)
+            .field("dir", &self.dir)
+            .field("segments", &self.segments)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("referer", &self.referer.as_deref().map(mask_url))
+            .field("cookie", &opt_secret(&self.cookie))
+            .field("user_agent", &self.user_agent)
+            .field("sha256", &self.sha256)
+            .field("not_before", &self.not_before)
+            .field("paused", &self.paused)
+            .finish()
+    }
 }
 
 /// What a probe of an address found out (for the "file details" step before adding a download).
@@ -106,6 +133,17 @@ enum Reason {
     Shutdown = 3,
 }
 
+/// Result of reading a job's credentials before it starts.
+enum Prepared {
+    Ready(Box<Job>, Box<Settings>),
+    /// The keyring is unavailable: keep the job queued and retry.
+    Wait(String),
+    /// Missing or corrupt credentials: fail with this message.
+    Fail(String),
+    /// Paused, removed or shut down while the keyring was being read.
+    Cancelled,
+}
+
 struct Running {
     cancel: CancellationToken,
     prog: Arc<Progress>,
@@ -118,6 +156,9 @@ struct Inner {
     secrets: Arc<dyn SecretStore>,
     /// Cache of the hydrated proxy URL: (keyring key, full URL).
     proxy_secret: Mutex<Option<(String, String)>>,
+    /// Jobs whose credentials could not be read because the keyring is unavailable:
+    /// they stay queued and are retried after the given instant.
+    keyring_wait: Mutex<HashMap<i64, Instant>>,
     /// Result of the plaintext→keyring migration run at open.
     keyring_migration: Mutex<Option<KeyringMigration>>,
     /// Lock file taken by `run`, so only one scheduler works on a database at a time.
@@ -143,8 +184,15 @@ impl Manager {
     /// the keyring is unavailable the plaintext is kept and the manager keeps working.
     pub fn open(db: &Path) -> Result<Manager> {
         let store = Store::open(db)?;
-        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore);
+        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore::new());
         let migration = secrets::migrate_plaintext_secrets(&store, secrets.as_ref(), Some(db));
+        // Best effort: remove keyring entries left behind by an interrupted add/remove.
+        secrets::reconcile_secrets(
+            &store,
+            secrets.as_ref(),
+            unix_now(),
+            secrets::RECONCILE_MIN_AGE,
+        );
         let m = Self::with_store_and_secrets_at(store, secrets, Some(db));
         *m.inner
             .keyring_migration
@@ -154,7 +202,7 @@ impl Manager {
     }
 
     pub fn with_store(store: Store) -> Manager {
-        Self::with_store_and_secrets_at(store, Arc::new(KeyringSecretStore), None)
+        Self::with_store_and_secrets_at(store, Arc::new(KeyringSecretStore::new()), None)
     }
 
     /// A manager with a custom secret store (tests use the in-memory mock).
@@ -182,6 +230,7 @@ impl Manager {
                 secrets,
                 proxy_secret: Mutex::new(None),
                 keyring_migration: Mutex::new(None),
+                keyring_wait: Mutex::new(HashMap::new()),
                 lock_path,
                 running: Mutex::new(HashMap::new()),
                 limiter: Arc::new(Limiter::new(settings.max_speed)),
@@ -211,35 +260,76 @@ impl Manager {
         self.inner.events.subscribe()
     }
 
+    /// The settings for display: a saved proxy login is shown as `scheme://***@host:port`,
+    /// never in clear. This never touches the keyring.
     pub fn settings(&self) -> Settings {
         let mut s = Settings::load(&self.inner.store);
-        self.hydrate_proxy(&mut s);
+        s.proxy = self.display_proxy(&s.proxy);
         s
     }
 
-    /// Replaces a stored proxy URL that has no userinfo with the full URL from the
-    /// keyring, if proxy credentials were saved. The call is cached per keyring key.
-    fn hydrate_proxy(&self, s: &mut Settings) {
-        if s.proxy.is_empty() || s.proxy == "none" || url_has_userinfo(&s.proxy) {
-            return;
+    fn display_proxy(&self, stored: &str) -> String {
+        if stored.is_empty() || stored == "none" {
+            return stored.to_string();
         }
-        let Ok(Some(key)) = self.inner.store.get_setting("keyring.proxy_ref") else {
-            return;
+        if url_has_userinfo(stored) {
+            // An old, not yet migrated database.
+            return crate::redact::mask_url(stored);
+        }
+        match self.inner.store.get_setting(PROXY_REF_SETTING) {
+            Ok(Some(_)) => match stored.find("://") {
+                Some(i) => format!("{}***@{}", &stored[..i + 3], &stored[i + 3..]),
+                None => stored.to_string(),
+            },
+            _ => stored.to_string(),
+        }
+    }
+
+    /// Puts the real proxy URL (with its login from the keyring) into `s`. Blocking:
+    /// call it off the async workers. A saved login that cannot be read is an error, so
+    /// a proxy is never used without the login it needs.
+    fn resolve_proxy(inner: &Inner, s: &mut Settings) -> Result<()> {
+        s.proxy = Settings::load(&inner.store).proxy;
+        if s.proxy.is_empty() || s.proxy == "none" || url_has_userinfo(&s.proxy) {
+            return Ok(());
+        }
+        let Some(key) = inner.store.get_setting(PROXY_REF_SETTING)? else {
+            return Ok(());
         };
-        let mut slot = self
-            .inner
-            .proxy_secret
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut slot = inner.proxy_secret.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached, full)) = slot.as_ref()
             && cached == &key
         {
             s.proxy = full.clone();
+            return Ok(());
+        }
+        drop(slot);
+        match inner.secrets.get(&key)? {
+            Some(full) => {
+                s.proxy = full.clone();
+                slot = inner.proxy_secret.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some((key, full));
+                Ok(())
+            }
+            None => Err(Error::Keyring(
+                "the proxy login is missing from the system keyring; set the proxy again".into(),
+            )),
+        }
+    }
+
+    /// Deletes a keyring entry; on failure the reference stays marked pending, so the
+    /// entry is removed by a later reconciliation.
+    fn forget_secret_ref(&self, secret_ref: &str) {
+        if secret_ref.is_empty() {
             return;
         }
-        if let Ok(Some(full)) = self.inner.secrets.get(&key) {
-            s.proxy = full.clone();
-            *slot = Some((key, full));
+        match self.inner.secrets.delete(secret_ref) {
+            Ok(()) => {
+                let _ = self.inner.store.clear_secret_pending(secret_ref);
+            }
+            Err(_) => {
+                let _ = self.inner.store.mark_secret_pending(secret_ref, unix_now());
+            }
         }
     }
 
@@ -259,9 +349,15 @@ impl Manager {
 
     fn set_proxy_setting(&self, value: &str) -> Result<()> {
         let clear_saved = || -> Result<()> {
-            if let Some(key) = self.inner.store.get_setting("keyring.proxy_ref")? {
-                let _ = self.inner.secrets.delete(&key);
-                self.inner.store.unset_setting("keyring.proxy_ref")?;
+            if let Some(key) = self.inner.store.get_setting(PROXY_REF_SETTING)? {
+                // Reference gone and entry marked pending in one step, then the entry is
+                // deleted; if the keyring is down the pending mark gets it removed later.
+                self.inner.store.unset_setting_marking_secret(
+                    PROXY_REF_SETTING,
+                    &key,
+                    unix_now(),
+                )?;
+                self.forget_secret_ref(&key);
             }
             *self
                 .inner
@@ -275,6 +371,15 @@ impl Manager {
             clear_saved()?;
             return Settings::set(&self.inner.store, "proxy", value);
         }
+        // The masked form shown by `settings()` given back unchanged keeps the saved login.
+        if trimmed.contains("***@") {
+            if trimmed == self.settings().proxy {
+                return Ok(());
+            }
+            return Err(Error::invalid(
+                "enter the proxy password again (*** only stands for the saved one)",
+            ));
+        }
         let (full, sanitized) = if url_has_userinfo(trimmed) {
             let sane = strip_url_userinfo(trimmed)?;
             (Some(trimmed.to_string()), sane)
@@ -285,25 +390,32 @@ impl Manager {
         Settings::default().apply("proxy", &sanitized)?;
         if let Some(full) = full {
             if !self.inner.secrets.available() {
-                return Err(Error::KeyringUnavailable(
-                    "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-                ));
+                return Err(Error::KeyringUnavailable(NO_KEYRING.into()));
             }
-            self.inner.secrets.put(secrets::PROXY_KEY, &full)?;
-            if self.inner.secrets.get(secrets::PROXY_KEY)? != Some(full.clone()) {
+            // Pending until the database refers to it: an interrupted change cannot leave
+            // an untracked entry.
+            let key = secrets::proxy_key(&self.inner.store.keyring_namespace()?);
+            self.inner.store.mark_secret_pending(&key, unix_now())?;
+            self.inner.secrets.put(&key, &full)?;
+            if self.inner.secrets.get(&key)? != Some(full.clone()) {
                 return Err(Error::Keyring(
                     "proxy credentials failed read-back verification".into(),
                 ));
             }
             self.inner.store.set_setting("proxy", &sanitized)?;
-            self.inner
-                .store
-                .set_setting("keyring.proxy_ref", secrets::PROXY_KEY)?;
+            let old = self.inner.store.get_setting(PROXY_REF_SETTING)?;
+            self.inner.store.set_setting(PROXY_REF_SETTING, &key)?;
+            let _ = self.inner.store.clear_secret_pending(&key);
+            // A login saved under an older key (earlier versions used "proxy") goes.
+            if let Some(old) = old.filter(|o| *o != key) {
+                let _ = self.inner.store.mark_secret_pending(&old, unix_now());
+                self.forget_secret_ref(&old);
+            }
             *self
                 .inner
                 .proxy_secret
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some((secrets::PROXY_KEY.into(), full));
+                .unwrap_or_else(|e| e.into_inner()) = Some((key, full));
         } else {
             clear_saved()?;
             self.inner.store.set_setting("proxy", &sanitized)?;
@@ -315,15 +427,21 @@ impl Manager {
 
     fn validate(req: &AddRequest) -> Result<()> {
         let lower = req.url.to_ascii_lowercase();
+        let shown = crate::redact::mask_url(&req.url);
         if !(lower.starts_with("http://") || lower.starts_with("https://")) {
             return Err(Error::invalid(format!(
-                "only http:// and https:// URLs are supported: {}",
-                req.url
+                "only http:// and https:// URLs are supported: {shown}"
             )));
+        }
+        // An address that does not parse is refused up front: its userinfo could not be
+        // recognised, so it would otherwise end up in the database in clear.
+        if let Err(e) = reqwest::Url::parse(&req.url) {
+            return Err(Error::invalid(format!("bad URL {shown}: {e}")));
         }
         if let Some(h) = req.headers.iter().find(|h| http::parse_header(h).is_none()) {
             return Err(Error::invalid(format!(
-                "bad header '{h}' (expected 'Name: value')"
+                "bad header '{}' (expected 'Name: value')",
+                crate::redact::redact_header(h)
             )));
         }
         Ok(())
@@ -332,10 +450,19 @@ impl Manager {
     /// Asks the server about an address without adding a job: size, range support and the file name.
     /// Uses the same client, headers and settings as a real download.
     pub async fn probe_url(&self, req: &AddRequest) -> std::result::Result<ProbeInfo, String> {
-        Self::validate(req).map_err(|e| e.to_string())?;
-        let s = self.settings();
-        let client = self.client_for(&s)?;
-        let job = Job {
+        use crate::redact::redact_text;
+        Self::validate(req).map_err(|e| redact_text(&e.to_string()))?;
+        // The proxy login may need the keyring: read it off the async workers.
+        let inner = Arc::clone(&self.inner);
+        let s = tokio::task::spawn_blocking(move || {
+            let mut s = Settings::load(&inner.store);
+            Self::resolve_proxy(&inner, &mut s).map(|()| s)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| redact_text(&e.to_string()))?;
+        let client = self.client_for(&s).map_err(|e| redact_text(&e))?;
+        let mut job = Job {
             id: 0,
             url: req.url.clone(),
             out_path: String::new(),
@@ -355,9 +482,11 @@ impl Manager {
             created: 0,
             not_before: 0,
         };
+        secrets::userinfo_into_headers(&mut job.url, &mut job.headers)
+            .map_err(|e| redact_text(&e.to_string()))?;
         let p = http::probe(&client, &job, &s.user_agent)
             .await
-            .map_err(|e| e.message().to_string())?;
+            .map_err(|e| redact_text(e.message()))?;
         let file_name = p
             .content_disposition
             .as_deref()
@@ -415,59 +544,66 @@ impl Manager {
             req.url.clone()
         };
         if has_secret && !self.inner.secrets.available() {
-            return Err(Error::KeyringUnavailable(
-                "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
-            ));
+            return Err(Error::KeyringUnavailable(NO_KEYRING.into()));
         }
-        // A job with credentials is inserted paused and only released to the scheduler
-        // once its secret is in the keyring and the row references it; otherwise the
-        // scheduler could start it without its login in the meantime.
+        let new_job = NewJob {
+            url: stripped_url,
+            out_path,
+            // A job with credentials is inserted paused and only released to the
+            // scheduler once its secret is in the keyring.
+            paused: req.paused || has_secret,
+            referer: req.referer,
+            user_agent: req.user_agent,
+            headers: Vec::new(),
+            cookie: None,
+            sha256: req.sha256.map(|s| s.to_ascii_lowercase()),
+            segments: req.segments.unwrap_or(0),
+            not_before: req.not_before,
+        };
+        if !has_secret {
+            let id = self.inner.store.add_job(&new_job, unix_now())?;
+            self.inner.wake.notify_one();
+            return Ok(id);
+        }
+        // Row, reference and pending mark are written together: a crash before the
+        // secret is stored leaves a row that fails clearly ("missing from the keyring")
+        // instead of downloading without its login, and no untracked keyring entry.
         let want_paused = req.paused;
-        let id = self.inner.store.add_job(
-            &NewJob {
-                url: stripped_url,
-                out_path,
-                paused: req.paused || has_secret,
-                referer: req.referer,
-                user_agent: req.user_agent,
-                headers: Vec::new(),
-                cookie: None,
-                sha256: req.sha256.map(|s| s.to_ascii_lowercase()),
-                segments: req.segments.unwrap_or(0),
-                not_before: req.not_before,
-            },
-            unix_now(),
-        )?;
-        if has_secret {
-            let store_secret = (|| -> Result<()> {
-                let key = job_key(id);
-                let secret = crate::secrets::JobSecret {
-                    url: req.url,
-                    headers: req.headers,
-                    cookie: req.cookie,
-                };
-                let json = serde_json::to_string(&secret).map_err(|e| {
-                    Error::Keyring(format!("cannot serialize job credentials: {e}"))
-                })?;
-                self.inner.secrets.put(&key, &json)?;
-                if self.inner.secrets.get(&key)? != Some(json.clone()) {
-                    return Err(Error::Keyring(
-                        "job credentials failed read-back verification".into(),
-                    ));
-                }
-                let url = strip_url_userinfo(&secret.url)?;
-                self.inner
-                    .store
-                    .set_credentials(id, &url, &[], None, &key)?;
-                if !want_paused {
-                    self.inner.store.set_state(id, State::Queued, None)?;
-                }
-                Ok(())
-            })();
-            if let Err(e) = store_secret {
+        let ns = self.inner.store.keyring_namespace()?;
+        let (id, key) = self
+            .inner
+            .store
+            .add_job_with_secret(&new_job, unix_now(), |id| job_key(&ns, id))?;
+        let store_secret = (|| -> Result<()> {
+            let secret = crate::secrets::JobSecret {
+                url: req.url,
+                headers: req.headers,
+                cookie: req.cookie,
+            };
+            let json = serde_json::to_string(&secret)
+                .map_err(|e| Error::Keyring(format!("cannot serialize job credentials: {e}")))?;
+            self.inner.secrets.put(&key, &json)?;
+            if self.inner.secrets.get(&key)? != Some(json.clone()) {
+                return Err(Error::Keyring(
+                    "job credentials failed read-back verification".into(),
+                ));
+            }
+            if !want_paused {
+                self.inner.store.set_state(id, State::Queued, None)?;
+            }
+            Ok(())
+        })();
+        match store_secret {
+            Ok(()) => {
+                let _ = self.inner.store.clear_secret_pending(&key);
+            }
+            Err(e) => {
                 // Do not leave a row or a keyring entry behind when the add failed.
-                let _ = self.inner.store.delete_job(id);
-                let _ = self.inner.secrets.delete(&job_key(id));
+                let _ = self
+                    .inner
+                    .store
+                    .delete_job_marking_secret(id, &key, unix_now());
+                self.forget_secret_ref(&key);
                 return Err(e);
             }
         }
@@ -492,6 +628,18 @@ impl Manager {
     /// Queues a paused or failed job again (progress is kept where possible).
     pub fn resume(&self, id: i64) -> Result<()> {
         let job = self.inner.store.require_job(id)?;
+        // A job waiting for the keyring is retried at once.
+        let was_waiting = self
+            .inner
+            .keyring_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
+            .is_some();
+        if job.state == State::Queued && was_waiting {
+            self.inner.wake.notify_one();
+            return Ok(());
+        }
         if !matches!(job.state, State::Paused | State::Failed) {
             return Err(Error::WrongState {
                 id,
@@ -503,19 +651,27 @@ impl Manager {
         Ok(())
     }
 
-    fn forget_secret(&self, job: &Job) {
-        if !job.secret_ref.is_empty() {
-            // Best-effort: a failed keyring delete must never block removing the row.
-            let _ = self.inner.secrets.delete(&job.secret_ref);
-        }
+    /// Deletes a job row together with a pending mark for its keyring entry, then the
+    /// entry itself (best effort: a failed keyring delete never blocks removing the row;
+    /// the pending mark makes a later reconciliation remove the entry).
+    fn delete_job_and_secret(&self, job: &Job) -> Result<()> {
+        self.inner
+            .store
+            .delete_job_marking_secret(job.id, &job.secret_ref, unix_now())?;
+        self.inner
+            .keyring_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&job.id);
+        self.forget_secret_ref(&job.secret_ref);
+        Ok(())
     }
 
     /// Forgets a job. Partial data is deleted; a finished file only with `delete_file`.
     pub fn remove(&self, id: i64, delete_file: bool) -> Result<()> {
         let job = self.inner.store.require_job(id)?;
         self.cancel_running(id, Reason::Remove);
-        self.inner.store.delete_job(id)?;
-        self.forget_secret(&job);
+        self.delete_job_and_secret(&job)?;
         if !job.out_path.is_empty() && !job.out_path.ends_with('/') {
             if job.state != State::Done {
                 let _ = std::fs::remove_file(format!("{}.part", job.out_path));
@@ -530,8 +686,7 @@ impl Manager {
     pub fn clear_finished(&self) -> Result<usize> {
         let done = self.inner.store.list_jobs(Some(State::Done))?;
         for j in &done {
-            self.inner.store.delete_job(j.id)?;
-            self.forget_secret(j);
+            self.delete_job_and_secret(j)?;
         }
         Ok(done.len())
     }
@@ -657,6 +812,12 @@ impl Manager {
             return None;
         }
         let running = self.inner.running.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = self
+            .inner
+            .keyring_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let instant = Instant::now();
         self.inner
             .store
             .list_jobs(Some(State::Queued))
@@ -666,7 +827,51 @@ impl Manager {
                 j.not_before <= now
                     && only.is_none_or(|o| o == j.id)
                     && !running.contains_key(&j.id)
+                    && waiting.get(&j.id).is_none_or(|&t| t <= instant)
             })
+    }
+
+    /// Whether a queued job (of `only`, if set) is waiting for the keyring.
+    fn waiting_for_keyring(&self, only: Option<i64>) -> bool {
+        let ids: Vec<i64> = self
+            .inner
+            .keyring_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .filter(|id| only.is_none_or(|o| o == *id))
+            .collect();
+        ids.into_iter()
+            .any(|id| self.inner.store.job_state(id).ok().flatten() == Some(State::Queued))
+    }
+
+    /// Reads a job's credentials and the proxy login from the keyring, on a blocking
+    /// thread (keyring calls are synchronous and may hang until their timeout; they must
+    /// never block an async worker), and moves URL userinfo into an `Authorization`
+    /// header.
+    async fn prepare_job(&self, job: Job, s: Settings, cancel: &CancellationToken) -> Prepared {
+        let inner = Arc::clone(&self.inner);
+        let work = tokio::task::spawn_blocking(move || -> Result<(Job, Settings)> {
+            let (mut job, mut s) = (job, s);
+            secrets::hydrate_job(&mut job, inner.secrets.as_ref())?;
+            Self::resolve_proxy(&inner, &mut s)?;
+            secrets::userinfo_into_headers(&mut job.url, &mut job.headers)?;
+            Ok((job, s))
+        });
+        // Pause, remove and shutdown do not wait for a hanging keyring.
+        let r = tokio::select! {
+            r = work => r,
+            _ = cancel.cancelled() => return Prepared::Cancelled,
+        };
+        match r {
+            Ok(Ok((job, s))) => Prepared::Ready(Box::new(job), Box::new(s)),
+            Ok(Err(Error::KeyringUnavailable(m))) => Prepared::Wait(crate::redact::redact_text(
+                &format!("waiting for the system keyring: {m}"),
+            )),
+            Ok(Err(e)) => Prepared::Fail(crate::redact::redact_text(&e.to_string())),
+            Err(e) => Prepared::Fail(format!("internal error: {e}")),
+        }
     }
 
     /// Seconds until the next queued job could start, if any is waiting for a time or window.
@@ -689,32 +894,8 @@ impl Manager {
             .min()
     }
 
-    fn spawn_job(&self, tasks: &mut tokio::task::JoinSet<()>, mut job: Job, s: Settings) {
+    fn spawn_job(&self, tasks: &mut tokio::task::JoinSet<()>, job: Job, s: Settings) {
         let id = job.id;
-        // Hydrate the credentials from the keyring before anything is sent. A missing
-        // or unreadable secret fails the job with a clear error instead of silently
-        // downloading without authentication.
-        if let Err(e) = crate::secrets::hydrate_job(&mut job, self.inner.secrets.as_ref()) {
-            let _ = self
-                .inner
-                .store
-                .set_state(id, State::Failed, Some(&e.to_string()));
-            self.inner.failed.fetch_add(1, Ordering::Relaxed);
-            let _ = self.inner.events.send(Event::Failed {
-                id,
-                error: e.to_string(),
-            });
-            return;
-        }
-        let client = match self.client_for(&s) {
-            Ok(c) => c,
-            Err(m) => {
-                let _ = self.inner.store.set_state(id, State::Failed, Some(&m));
-                self.inner.failed.fetch_add(1, Ordering::Relaxed);
-                let _ = self.inner.events.send(Event::Failed { id, error: m });
-                return;
-            }
-        };
         let _ = self.inner.store.set_state(id, State::Active, None);
         let prog = Progress::new();
         let cancel = CancellationToken::new();
@@ -731,21 +912,68 @@ impl Manager {
                     reason: Arc::clone(&reason),
                 },
             );
-        let mut job = job;
-        if job.segments == 0 {
-            job.segments = s.segments;
-        }
-        let env = JobEnv {
-            store: Arc::clone(&self.inner.store),
-            client,
-            settings: s,
-            limiter: Arc::clone(&self.inner.limiter),
-            events: self.inner.events.clone(),
-        };
         let me = self.clone();
         tasks.spawn(async move {
-            let outcome = job::run_job(env, job, cancel, prog).await;
             let inner = &me.inner;
+            // Credentials are filled in before anything is sent. A missing or unreadable
+            // secret fails the job with a clear error; an unavailable keyring makes it
+            // wait. A job never downloads without its login.
+            let outcome = match me.prepare_job(job, s, &cancel).await {
+                Prepared::Ready(job, s) => match me.client_for(&s) {
+                    Err(m) => Outcome::Failed(m),
+                    Ok(client) => {
+                        let mut job = *job;
+                        if job.segments == 0 {
+                            job.segments = s.segments;
+                        }
+                        inner
+                            .keyring_wait
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&id);
+                        let env = JobEnv {
+                            store: Arc::clone(&inner.store),
+                            client,
+                            settings: *s,
+                            limiter: Arc::clone(&inner.limiter),
+                            events: inner.events.clone(),
+                        };
+                        if cancel.is_cancelled() {
+                            Outcome::Cancelled
+                        } else {
+                            job::run_job(env, job, cancel, prog).await
+                        }
+                    }
+                },
+                Prepared::Fail(m) => Outcome::Failed(m),
+                Prepared::Cancelled => Outcome::Cancelled,
+                Prepared::Wait(m) => {
+                    // Not started: back to the queue (unless paused or removed meanwhile),
+                    // retried after a short delay, or at once on resume.
+                    if inner.store.job_state(id).ok().flatten() == Some(State::Active) {
+                        let _ = inner.store.set_state(id, State::Queued, Some(&m));
+                    }
+                    let first = inner
+                        .keyring_wait
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(id, Instant::now() + KEYRING_RETRY)
+                        .is_none();
+                    if first {
+                        let _ = inner.events.send(Event::Info {
+                            id,
+                            message: format!("keyring: {m}"),
+                        });
+                    }
+                    inner
+                        .running
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                    inner.wake.notify_one();
+                    return;
+                }
+            };
             match outcome {
                 Outcome::Done(path) => {
                     let _ = inner.store.set_state(id, State::Done, None);
@@ -756,6 +984,7 @@ impl Manager {
                     });
                 }
                 Outcome::Failed(error) => {
+                    let error = crate::redact::redact_text(&error);
                     if inner.store.job_state(id).ok().flatten().is_some() {
                         let _ = inner.store.set_state(id, State::Failed, Some(&error));
                     }
@@ -819,6 +1048,8 @@ impl Manager {
         let mut last_poll = Instant::now();
         let mut announced_wait = 0i64;
         let mut interrupted = false;
+        let mut last_reconcile = Instant::now();
+        let mut reconcile: Option<tokio::task::JoinHandle<usize>> = None;
 
         loop {
             while tasks.try_join_next().is_some() {}
@@ -829,6 +1060,24 @@ impl Manager {
             let settings = self.settings();
             inner.limiter.set_rate(settings.max_speed);
             let now = unix_now();
+
+            // Retry removing keyring entries left behind (the keyring may be back).
+            if last_reconcile.elapsed() >= RECONCILE_EVERY
+                && reconcile.as_ref().is_none_or(|h| h.is_finished())
+            {
+                last_reconcile = Instant::now();
+                if inner.store.pending_secrets().is_ok_and(|p| !p.is_empty()) {
+                    let me = Arc::clone(&self.inner);
+                    reconcile = Some(tokio::task::spawn_blocking(move || {
+                        secrets::reconcile_secrets(
+                            &me.store,
+                            me.secrets.as_ref(),
+                            unix_now(),
+                            secrets::RECONCILE_MIN_AGE,
+                        )
+                    }));
+                }
+            }
 
             if last_poll.elapsed() >= Duration::from_secs(1) {
                 last_poll = Instant::now();
@@ -872,7 +1121,8 @@ impl Manager {
             {
                 match self.next_wakeup(now, &settings, opts.only_id) {
                     None => {
-                        let waiting = self.next_runnable(now, &settings, opts.only_id).is_some();
+                        let waiting = self.next_runnable(now, &settings, opts.only_id).is_some()
+                            || self.waiting_for_keyring(opts.only_id);
                         if !waiting {
                             break;
                         }
