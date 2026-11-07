@@ -64,7 +64,7 @@ Not available yet. Some of these are visible in the app but disabled (marked "Co
 - Start on login, clipboard watching
 - Taking over downloads from web browsers (extension)
 - Protocols other than HTTP and HTTPS (no FTP, torrent or metalink)
-- More packages: the AUR package `cawget-bin`, Flatpak, Snap
+- More packages: the AUR package `cawget-bin`, a Flathub listing, Snap
 
 Known limit: a file that changes on the server *during* a run, without its size changing, is not detected
 (changes between runs are).

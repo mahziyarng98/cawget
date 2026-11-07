@@ -195,5 +195,5 @@ npx tauri build          # results in target/release/bundle/: AppImage, .deb and
 
 - An APT repository (automatic updates through `apt`)
 - The AUR package `cawget-bin` (see above)
-- Flatpak and Snap packages
+- Flathub listing and Snap packages
 - A browser extension that hands downloads to Cawget
