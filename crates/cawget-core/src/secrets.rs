@@ -556,7 +556,19 @@ impl KeyringMigration {
     }
 }
 
-/// Copies the database to a private, timestamped backup next to it.
+/// Setting that remembers the backup of an unfinished migration, so a retry reuses it
+/// instead of writing another copy of the plaintext.
+pub const BACKUP_SETTING: &str = "keyring.migration_backup";
+
+/// The backup of an earlier, unfinished migration attempt, if it still exists.
+fn previous_backup(db: &Store) -> Option<PathBuf> {
+    let p = PathBuf::from(db.get_setting(BACKUP_SETTING).ok()??);
+    p.is_file().then_some(p)
+}
+
+/// Copies the database to a private, timestamped backup next to it. The file is created
+/// empty with mode 0600 first (never readable by others, whatever the umask), then
+/// filled by `VACUUM INTO`, which accepts an existing empty file.
 fn backup_database(db_path: &Path) -> Result<PathBuf> {
     let dir = db_path
         .parent()
@@ -568,12 +580,25 @@ fn backup_database(db_path: &Path) -> Result<PathBuf> {
         .to_string_lossy();
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     let dest = dir.join(format!("{name}.pre-keyring-{stamp}.bak"));
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&dest)?;
+    }
     let quoted = dest.to_string_lossy().replace('\'', "''");
-    let conn = rusqlite::Connection::open(db_path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
-    drop(conn);
-    crate::paths::set_private_file_mode(&dest)?;
+    let filled = (|| -> Result<()> {
+        let conn = rusqlite::Connection::open(db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
+        Ok(())
+    })();
+    if let Err(e) = filled {
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
     Ok(dest)
 }
 
@@ -622,9 +647,19 @@ pub fn migrate_plaintext_secrets(
             message: "no Secret Service is running (GNOME Keyring / KWallet) or the app is sandboxed without permission".into(),
         };
     }
-    let backup = match db_path {
-        Some(p) => match backup_database(p) {
-            Ok(b) => Some(b),
+    // A retry after a partial failure keeps using the first backup: it already holds
+    // every credential that is still left to migrate.
+    let backup = match (db_path, previous_backup(db)) {
+        (_, Some(b)) => Some(b),
+        (Some(p), None) => match backup_database(p) {
+            Ok(b) => {
+                if let Err(e) = db.set_setting(BACKUP_SETTING, &b.to_string_lossy()) {
+                    return KeyringMigration::Failed {
+                        error: e.to_string(),
+                    };
+                }
+                Some(b)
+            }
             Err(e) => {
                 return KeyringMigration::Failed {
                     error: e.to_string(),
@@ -723,9 +758,11 @@ pub fn migrate_plaintext_secrets(
 
     if !failures.is_empty() {
         return KeyringMigration::Failed {
-            error: failures.join("; "),
+            error: crate::redact::redact_text(&failures.join("; ")),
         };
     }
+    // Done: a later migration (should one ever be needed) starts with a fresh backup.
+    let _ = db.unset_setting(BACKUP_SETTING);
 
     KeyringMigration::Migrated {
         jobs: migrated_jobs,
