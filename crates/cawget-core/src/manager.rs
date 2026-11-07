@@ -419,11 +419,15 @@ impl Manager {
                 "no Secret Service is available (GNOME Keyring or KWallet is not running, or the app is sandboxed without permission)".into(),
             ));
         }
+        // A job with credentials is inserted paused and only released to the scheduler
+        // once its secret is in the keyring and the row references it; otherwise the
+        // scheduler could start it without its login in the meantime.
+        let want_paused = req.paused;
         let id = self.inner.store.add_job(
             &NewJob {
                 url: stripped_url,
                 out_path,
-                paused: req.paused,
+                paused: req.paused || has_secret,
                 referer: req.referer,
                 user_agent: req.user_agent,
                 headers: Vec::new(),
@@ -452,11 +456,18 @@ impl Manager {
                     ));
                 }
                 let url = strip_url_userinfo(&secret.url)?;
-                self.inner.store.set_credentials(id, &url, &[], None, &key)
+                self.inner
+                    .store
+                    .set_credentials(id, &url, &[], None, &key)?;
+                if !want_paused {
+                    self.inner.store.set_state(id, State::Queued, None)?;
+                }
+                Ok(())
             })();
             if let Err(e) = store_secret {
-                // Do not leave a queued row behind when the secret could not be stored.
+                // Do not leave a row or a keyring entry behind when the add failed.
                 let _ = self.inner.store.delete_job(id);
+                let _ = self.inner.secrets.delete(&job_key(id));
                 return Err(e);
             }
         }

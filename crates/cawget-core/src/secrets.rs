@@ -484,6 +484,11 @@ pub fn migrate_plaintext_secrets(
         }
     }
 
+    if migrated_jobs > 0 || migrated_proxy {
+        // Best effort: scrub the cleared plaintext out of free pages and the WAL.
+        let _ = db.compact();
+    }
+
     if !failures.is_empty() {
         return KeyringMigration::Failed {
             error: failures.join("; "),

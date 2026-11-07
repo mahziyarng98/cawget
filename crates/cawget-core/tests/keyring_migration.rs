@@ -362,3 +362,95 @@ fn manager_proxy_setting_roundtrip() {
     m.set_setting("proxy", "").unwrap();
     assert_eq!(m.settings().proxy, "");
 }
+
+#[test]
+fn job_with_credentials_is_not_runnable_before_its_secret_is_stored() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = Manager::with_store_and_secrets(store, secrets.clone());
+
+    // Queued add: ends up queued, with the reference set and the secret stored.
+    let id = m
+        .add(AddRequest {
+            url: "http://example.org/f".into(),
+            headers: vec!["X-Test: dummy".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let job = m.store().require_job(id).unwrap();
+    assert_eq!(job.state, cawget_core::State::Queued);
+    assert_eq!(job.secret_ref, job_key(id));
+    assert!(secrets.get(&job.secret_ref).unwrap().is_some());
+
+    // Paused add stays paused.
+    let id2 = m
+        .add(AddRequest {
+            url: "http://example.org/g".into(),
+            headers: vec!["X-Test: dummy".into()],
+            paused: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        m.store().require_job(id2).unwrap().state,
+        cawget_core::State::Paused
+    );
+}
+
+#[test]
+fn failed_add_leaves_no_keyring_entry_behind() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let secrets = Arc::new(MemorySecretStore::new());
+    let m = Manager::with_store_and_secrets(store, secrets.clone());
+    secrets.corrupt_next_read(); // read-back verification fails after the put
+    let err = m
+        .add(AddRequest {
+            url: "http://example.org/f".into(),
+            headers: vec!["X-Test: dummy".into()],
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::Keyring(_)), "{err:?}");
+    assert!(m.list().unwrap().is_empty());
+    assert!(
+        secrets.get(&job_key(1)).unwrap().is_none(),
+        "orphaned entry"
+    );
+}
+
+#[test]
+fn migration_leaves_no_plaintext_in_the_database_file_or_wal() {
+    let (_tmp, db) = temp_db();
+    let store = Store::open(&db).unwrap();
+    let id = store
+        .add_job(
+            &NewJob {
+                url: "http://scrubuser:ScrubPw-DUMMY@example.org/private".into(),
+                headers: vec!["X-Api-Key: ScrubKey-DUMMY".into()],
+                cookie: Some("sid=ScrubCookie-DUMMY".into()),
+                ..Default::default()
+            },
+            1,
+        )
+        .unwrap();
+    let _ = id;
+    let secrets = MemorySecretStore::new();
+    let outcome = migrate_plaintext_secrets(&store, &secrets, Some(&db));
+    assert!(
+        matches!(outcome, KeyringMigration::Migrated { .. }),
+        "{outcome:?}"
+    );
+    for ext in ["", "-wal"] {
+        let mut p = db.as_os_str().to_owned();
+        p.push(ext);
+        let bytes = std::fs::read(std::path::PathBuf::from(p)).unwrap_or_default();
+        for needle in ["ScrubPw-DUMMY", "ScrubKey-DUMMY", "ScrubCookie-DUMMY"] {
+            assert!(
+                !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                "{needle} still present in db{ext}"
+            );
+        }
+    }
+}

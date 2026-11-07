@@ -373,6 +373,16 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Rewrites the database file and truncates the WAL, so that values cleared by an
+    /// `UPDATE` (the plaintext credentials of the keyring migration) do not linger in
+    /// free space or in old WAL frames.
+    pub fn compact(&self) -> Result<()> {
+        let db = self.db();
+        db.execute_batch("VACUUM")?;
+        db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     /// The stored proxy setting, if any (the value may carry userinfo in old,
     /// un-migrated databases).
     pub fn proxy_setting(&self) -> Result<Option<String>> {
