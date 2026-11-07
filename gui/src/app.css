@@ -16,7 +16,7 @@ button { cursor: pointer; }
  * with plaintext `start` follows the (LTR) text instead of the layout. */
 .btn:not(:has(> .icon)), .btn > span, .menu-item > span, .hint, .error-text, .warn-text, p[role="status"], .toast, .info-box > span { unicode-bidi: plaintext; }
 [dir="rtl"] :is(.hint, .error-text, .warn-text, .mi-label, p[role="status"], .info-box > span) { text-align: right; }
-.selectable { user-select: text; }
+.selectable { -webkit-user-select: text; user-select: text; }
 kbd { font: 0.6875rem ui-monospace, monospace; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; background: var(--surface-2); }
 .icon { flex: none; }
 
@@ -170,8 +170,13 @@ bdi { min-width: 0; }
 /* ---------- dialogs ---------- */
 .modal-scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 0.5rem; background: color-mix(in srgb, var(--bg) 60%, transparent); }
 .modal { container: dialog / inline-size; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); min-block-size: 0; display: flex; flex-direction: column; outline: none; }
-.modal-title { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-block-size: 2rem; padding-inline: 12px 4px; border-block-end: 1px solid var(--border); font-weight: 650; background: var(--surface-2); }
+.modal-title { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-block-size: 2rem; padding-inline: 12px 4px; border-block-end: 1px solid var(--border); font-weight: 650; background: var(--surface-2); cursor: grab; touch-action: none; }
 .modal-title-text { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal.dragging .modal-title { cursor: grabbing; }
+/* Dialog chrome is not text to copy: the title, tabs, labels and buttons do not select when clicked or dragged.
+ * Values stay selectable (addresses, paths, error messages, the connections table, form fields). */
+.modal :is(.modal-title, .tab, label, legend, dt, th, .bar-label, .opt-label, button) { -webkit-user-select: none; user-select: none; }
+.modal :is(.selectable, .error-text, input, textarea) { -webkit-user-select: text; user-select: text; }
 .modal-body { flex: 1 1 auto; min-block-size: 0; padding: 14px 16px; overflow: auto; }
 .modal-body p { margin: 0 0 8px; }
 .modal-buttons { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-block-start: 1px solid var(--border); }

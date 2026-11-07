@@ -3,12 +3,6 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
-
-### Fixed
-- Flatpak: the tray icon showed as a missing-icon placeholder because its image was written inside the sandbox's
-  private runtime directory; it is now written to `$XDG_RUNTIME_DIR/app/<app id>`, which the panel can read.
-
 ## [0.1.1] - 2026-11-07
 
 ### Upgrade note
@@ -42,6 +36,8 @@ All notable changes to this project are documented here. The format follows
 - Keyring entries left behind when the keyring was down (removed downloads, cleared proxy login) or by an
   interrupted add/remove are removed at a later start. Keyring keys are now per database, so several databases
   never overwrite each other's logins.
+- Tray icon now shows correctly in the Flatpak build.
+- Dialogs can now be moved by dragging their title bar; header text no longer gets selected accidentally.
 
 ## [0.1.0] - first public release
 
