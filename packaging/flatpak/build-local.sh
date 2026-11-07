@@ -3,9 +3,10 @@
 # locally with flatpak-builder.
 #
 # This is the main local path (see README.md). It:
-#   1. creates a Python venv in a fresh mktemp directory OUTSIDE the repo
-#   2. shallow-clones flatpak-builder-tools into that temp dir and prints the
-#      commit hash used
+#   1. creates (or reuses) a Python venv in ~/.cache/cawget-flatpak/work,
+#      OUTSIDE the repo
+#   2. shallow-clones (or refreshes) flatpak-builder-tools in that directory
+#      and prints the commit hash used
 #   3. installs the generators' dependencies into the venv
 #   4. generates cargo-sources.json (from the workspace-root Cargo.lock) and
 #      node-sources.json (from gui/package-lock.json) into packaging/flatpak/

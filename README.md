@@ -7,7 +7,7 @@ Cawget is an independent implementation. It uses no third-party proprietary code
 
 ![Cawget main window on a wide screen](docs/screenshots/wide.png)
 
-> **Status:** 0.1.0, the first public release. Expect rough edges; see [Planned](#planned).
+> **Status:** 0.1.1, an early release. Expect rough edges; see [Planned](#planned).
 
 ## Install
 
@@ -16,8 +16,8 @@ Download a package from the [Releases page](https://github.com/mahziyarng98/cawg
 - **AppImage** (any x86_64 Linux, no installation): `chmod +x Cawget_<version>_amd64.AppImage`, then run it.
 - **Debian / Ubuntu:** `sudo apt install ./Cawget_<version>_amd64.deb`, then start **Cawget** from the menu.
 - **Fedora / openSUSE:** `sudo dnf install ./Cawget-<version>-1.x86_64.rpm` (or `zypper install`).
-- **Flatpak bundle** (x86_64, *not on Flathub*): download `cawget-0.1.0-x86_64.flatpak`, then run
-  `flatpak install --user cawget-0.1.0-x86_64.flatpak` ([details](docs/INSTALL.md#flatpak-bundle)).
+- **Flatpak bundle** (x86_64, *not on Flathub*): download `cawget-0.1.1-x86_64.flatpak`, then run
+  `flatpak install --user cawget-0.1.1-x86_64.flatpak` ([details](docs/INSTALL.md#flatpak-bundle)).
 - **Arch Linux:** an AUR package is *coming soon* (AUR registration is temporarily closed). For now, download the
   [PKGBUILD](https://raw.githubusercontent.com/mahziyarng98/cawget/main/packaging/aur/PKGBUILD) into an empty
   folder and run `makepkg -si` there ([details](docs/INSTALL.md#arch-linux)), or use the AppImage.
