@@ -55,6 +55,9 @@ GTK and WebKitGTK libraries it needs.
 
 - If it does not start and mentions FUSE, either install your distribution's `libfuse2` package or start it with
   `./Cawget_<version>_amd64.AppImage --appimage-extract-and-run`.
+- To update the AppImage in place, use [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (or
+  `appimageupdatetool`) and keep the matching `.zsync` file from the release next to it. The AppImage carries its
+  update information, so `appimageupdatetool Cawget_<version>_amd64.AppImage` finds newer releases by itself.
 - To remove it, delete the file. Your download queue stays in `~/.local/share/cawget/` (see below).
 - The AppImage does not add an entry to the application menu by itself.
 

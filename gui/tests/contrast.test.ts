@@ -35,8 +35,10 @@ function over(rgba: string, bg: string): string {
   return "#" + [r, g, b].map((v, i) => Math.round(a * v + (1 - a) * base[i]).toString(16).padStart(2, "0")).join("");
 }
 
-const dark = block(":root");
-const light = block(':root[data-theme="light"]');
+const light = block(":root");
+const dark = block(':root[data-theme="dark"]');
+// The pre-JS System-mode palette; must stay identical to the explicit dark palette.
+const mediaDark = block(":root:not([data-theme])");
 
 // [foreground role, background roles it is used on]
 const PAIRS: [string, string[]][] = [
@@ -48,7 +50,13 @@ const PAIRS: [string, string[]][] = [
   ["success", ["surface"]],
 ];
 
-for (const [name, theme, base] of [["dark", dark, dark], ["light", light, dark]] as const) {
+describe("system-mode palette", () => {
+  it("uses the same tokens as an explicit dark theme", () => {
+    expect(mediaDark).toEqual(dark);
+  });
+});
+
+for (const [name, theme, base] of [["light", light, light], ["dark", dark, light]] as const) {
   describe(`${name} theme contrast (WCAG AA, 4.5:1)`, () => {
     for (const [fg, bgs] of PAIRS) {
       for (const bg of bgs) {

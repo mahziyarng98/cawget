@@ -1,37 +1,11 @@
-/* Theme tokens: the only place colours are defined. Dark is the default; light via [data-theme="light"].
+/* Theme tokens: the only place colours are defined.
+ *
+ * Light is the default, also before the UI has started, so a system that is not in dark mode always gets a light
+ * window. Dark is used when the desktop asks for it (System mode, via prefers-color-scheme) or when the user chose
+ * it in Options (data-theme="dark"). Every component reads these tokens; a light-only override belongs here.
  * Tokens marked "derived" are additions for text roles where a base palette value would fail WCAG AA (4.5:1) as
  * text on its background; tests/contrast.test.ts enforces the pairs. */
 :root {
-  color-scheme: dark;
-  --bg: #11151e;
-  --surface: #1f2430;
-  --surface-2: #2a3145;
-  --border: #3a4256;
-  --text: #e8eef5;
-  --text-muted: #7b8496;          /* base palette; AA only on --bg, so used for disabled/decorative text */
-  --silver: #aeb7c6;
-  --accent: #2dd4d4;
-  --accent-strong: #22c4c9;
-  --selection-row: rgba(45, 212, 212, 0.14);
-  --danger: #e5484d;
-  --success: #3dd68c;
-  --warning: #f5a524;
-  /* derived text roles */
-  --text-secondary: var(--silver);  /* secondary text on surfaces (7.7:1 on surface) */
-  --danger-text: #ff7a7e;           /* derived: --danger is 3.96:1 on surface */
-  --accent-text: var(--accent);
-  --accent-fill: var(--accent);     /* filled buttons */
-  --on-accent: #11151e;             /* text on --accent-fill (10:1) */
-  --track: var(--surface-2);
-  --focus: var(--accent);
-
-  --radius: 4px;
-  --row-h: 1.75rem;                /* 28px at the default text size */
-  --font: "Inter", "Cantarell", "Noto Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-size: 0.8125rem;          /* 13px at the default text size */
-}
-
-:root[data-theme="light"] {
   color-scheme: light;
   --bg: #f4f6fa;
   --surface: #ffffff;
@@ -46,6 +20,7 @@
   --danger: #c62a2f;                /* derived */
   --success: #16794b;               /* derived */
   --warning: #9a5b00;               /* derived */
+  /* derived text roles */
   --text-secondary: #5c667a;
   --danger-text: #c62a2f;
   --accent-text: #0a7378;           /* derived: --accent is 3.4:1 as text on white */
@@ -53,4 +28,65 @@
   --on-accent: #ffffff;
   --track: var(--surface-2);
   --focus: #0a7378;
+
+  --radius: 4px;
+  --row-h: 1.75rem;                /* 28px at the default text size */
+  --font: "Inter", "Cantarell", "Noto Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-size: 0.8125rem;          /* 13px at the default text size */
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #11151e;
+  --surface: #1f2430;
+  --surface-2: #2a3145;
+  --border: #3a4256;
+  --text: #e8eef5;
+  --text-muted: #7b8496;          /* base palette; AA only on --bg, so used for disabled/decorative text */
+  --silver: #aeb7c6;
+  --accent: #2dd4d4;
+  --accent-strong: #22c4c9;
+  --selection-row: rgba(45, 212, 212, 0.14);
+  --danger: #e5484d;
+  --success: #3dd68c;
+  --warning: #f5a524;
+  --text-secondary: var(--silver);  /* secondary text on surfaces (7.7:1 on surface) */
+  --danger-text: #ff7a7e;           /* derived: --danger is 3.96:1 on surface */
+  --accent-text: var(--accent);
+  --accent-fill: var(--accent);     /* filled buttons */
+  --on-accent: #11151e;             /* text on --accent-fill (10:1) */
+  --track: var(--surface-2);
+  --focus: var(--accent);
+}
+
+/* System mode before App.svelte has set data-theme. The webview reports the desktop preference; when it is dark,
+ * use the same palette as an explicit Dark choice. Keep this block in sync with :root[data-theme="dark"]. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #11151e;
+    --surface: #1f2430;
+    --surface-2: #2a3145;
+    --border: #3a4256;
+    --text: #e8eef5;
+    --text-muted: #7b8496;
+    --silver: #aeb7c6;
+    --accent: #2dd4d4;
+    --accent-strong: #22c4c9;
+    --selection-row: rgba(45, 212, 212, 0.14);
+    --danger: #e5484d;
+    --success: #3dd68c;
+    --warning: #f5a524;
+    --text-secondary: var(--silver);
+    --danger-text: #ff7a7e;
+    --accent-text: var(--accent);
+    --accent-fill: var(--accent);
+    --on-accent: #11151e;
+    --track: var(--surface-2);
+    --focus: var(--accent);
+  }
 }

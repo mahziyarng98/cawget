@@ -9,6 +9,7 @@
   import Modal from "./Modal.svelte";
   import TabStrip from "./TabStrip.svelte";
   import { type ProxyMode, type SpeedUnit, hhmm, proxyMode, proxySetting, speedSetting, speedToEditor } from "./options";
+  import type { ThemeMode } from "./theme";
 
   let {
     settings,
@@ -29,13 +30,13 @@
   }: {
     settings: SettingsDto;
     info: AppInfo | null;
-    theme: "dark" | "light";
+    theme: ThemeMode;
     dir: "ltr" | "rtl";
     showComplete: boolean;
     progressOnStart: boolean;
     tray: { available: boolean; close_to_tray: boolean };
     onchange: () => void;
-    ontheme: (t: "dark" | "light") => void;
+    ontheme: (t: ThemeMode) => void;
     ondir: (d: "ltr" | "rtl") => void;
     onshowcomplete: (v: boolean) => void;
     onprogressonstart: (v: boolean) => void;
@@ -106,10 +107,12 @@
     {#if tab === "general"}
       <div class="opt-row"><span class="opt-label">Theme</span>
         <div class="seg-ctl" role="radiogroup" aria-label="Theme">
-          <button role="radio" aria-checked={theme === "dark"} class:on={theme === "dark"} onclick={() => ontheme("dark")}>Dark</button>
+          <button role="radio" aria-checked={theme === "system"} class:on={theme === "system"} onclick={() => ontheme("system")} title="Follow the desktop's light or dark preference">System</button>
           <button role="radio" aria-checked={theme === "light"} class:on={theme === "light"} onclick={() => ontheme("light")}>Light</button>
+          <button role="radio" aria-checked={theme === "dark"} class:on={theme === "dark"} onclick={() => ontheme("dark")}>Dark</button>
         </div>
       </div>
+      <p class="hint">System follows the desktop setting and is the default; Light and Dark keep that theme regardless of the desktop.</p>
       <div class="opt-row"><span class="opt-label">Layout direction</span>
         <div class="seg-ctl" role="radiogroup" aria-label="Layout direction">
           <button role="radio" aria-checked={dir === "ltr"} class:on={dir === "ltr"} onclick={() => ondir("ltr")}>Left to right</button>
