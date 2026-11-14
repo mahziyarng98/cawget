@@ -26,7 +26,7 @@ percent-encoding = "2"
 rustix = { version = "1", features = ["fs"] }
 bytes = "1"
 sha2 = "0.11"
-dirs = "6"
+dirs = "7"
 base64 = "0.22"
 keyring-core = "1"
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
