@@ -92,6 +92,16 @@
     <content_attribute id="money-advertising">none</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.1.2" date="2026-11-14">
+      <description>
+        <p>The desktop app now follows the system colour scheme by default.</p>
+        <ul>
+          <li>A System theme follows the desktop's light or dark preference and is the default. Light and Dark can still be chosen in Options, and the choice is remembered.</li>
+          <li>A light desktop no longer gets a dark window while the app starts.</li>
+          <li>The AppImage carries update information, so AppImageUpdate can update it in place from the published .zsync file.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-07">
       <description>
         <p>Logins are now stored in the system keyring.</p>
