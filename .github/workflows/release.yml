@@ -13,6 +13,9 @@ jobs:
     env:
       # The AppImage tooling runs without FUSE on the runner.
       APPIMAGE_EXTRACT_AND_RUN: "1"
+      # linuxdeploy-plugin-appimage passes this to appimagetool -u. It embeds the update information in the AppImage
+      # and (with zsync installed) writes Cawget_<version>_amd64.AppImage.zsync for it; both are attached below.
+      LDAI_UPDATE_INFORMATION: "gh-releases-zsync|mahziyarng98|cawget|latest|Cawget_*_amd64.AppImage.zsync"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -27,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential file libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev \
-            libxdo-dev libssl-dev xdg-utils rpm2cpio cpio
+            libxdo-dev libssl-dev xdg-utils rpm2cpio cpio zsync
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -62,7 +65,20 @@ jobs:
         run: |
           mkdir -p out
           cp target/release/bundle/appimage/*.AppImage target/release/bundle/deb/*.deb target/release/bundle/rpm/*.rpm out/
+          # appimagetool writes the .zsync into its working directory (gui/src-tauri for Tauri), not next to $OUTPUT.
+          zsync=$(find gui target -name 'Cawget_*_amd64.AppImage.zsync' -type f -print -quit)
+          test -n "${zsync}" || { echo "::error::appimagetool did not produce a .zsync file"; exit 1; }
+          cp "${zsync}" out/
           ls -la out
+
+      - name: AppImage update information and .zsync
+        run: |
+          appimage=$(realpath out/*.AppImage)
+          update_info="gh-releases-zsync|mahziyarng98|cawget|latest|Cawget_*_amd64.AppImage.zsync"
+          test -s "${appimage}.zsync" || { echo "::error::${appimage}.zsync is missing"; exit 1; }
+          readelf -p .upd_info "${appimage}" | grep -F -- "${update_info}" \
+            || { echo "::error::the AppImage does not embed the expected update information"; exit 1; }
+          echo "update information: ${update_info}"
 
       - name: No build paths or user names in the shipped binaries
         run: |
@@ -122,6 +138,9 @@ jobs:
           Cawget ${VERSION}
 
           Packages: AppImage (any recent x86_64 Linux), .deb, .rpm. Verify downloads with SHA256SUMS.
+
+          The AppImage embeds update information; the matching .zsync file is in this release. Update it in place
+          with AppImageUpdate or appimageupdatetool (https://github.com/AppImageCommunity/AppImageUpdate).
 
           The AppImage bundles GTK, WebKitGTK and their dependencies from Ubuntu 22.04; bundled-libraries.txt
           lists them with their source packages (apt-get source <package>, or launchpad.net/ubuntu/+source/<package>).

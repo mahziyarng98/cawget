@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] - 2026-11-14
+
+### Added
+- A System theme that follows the desktop's light or dark preference (the default). Light and Dark can still be
+  chosen in Options, and the choice is remembered.
+- AppImage update information: release builds embed `gh-releases-zsync` metadata and publish the matching `.zsync`
+  file, so AppImageUpdate can update the AppImage in place.
+
+### Fixed
+- The window starts in the light theme when the desktop is not in dark mode, instead of always starting dark.
+
 ## [0.1.1] - 2026-11-07
 
 ### Upgrade note

@@ -40,9 +40,10 @@ far. Step-by-step instructions (checksums, removing, where your data is): [docs/
   environment, `https://` downloads through a proxy, `https://` proxy URLs and `socks5://` proxies.
 - **Keyring credentials:** logins for downloads and proxies are stored in the system keyring (GNOME Keyring/
   KWallet via Secret Service), not in the database; see [Credentials and the system keyring](#credentials-and-the-system-keyring).
-- **Desktop app:** sortable and reorderable table, per-download progress window with a segment map, light and dark
-  themes, right-to-left layout, keyboard shortcuts (F1 lists them), system tray (needs a desktop that shows
-  StatusNotifier icons; GNOME needs an extension, see [docs/INSTALL.md](docs/INSTALL.md#troubleshooting)).
+- **Desktop app:** sortable and reorderable table, per-download progress window with a segment map, System, Light and
+  Dark themes (System follows the desktop), right-to-left layout, keyboard shortcuts (F1 lists them), system tray
+  (needs a desktop that shows StatusNotifier icons; GNOME needs an extension, see
+  [docs/INSTALL.md](docs/INSTALL.md#troubleshooting)).
 - **Any window size:** from 480x360 up to 4K, including half-screen tiles: the toolbar drops labels and then moves
   less-used buttons into a "…" (more actions) menu, the menus fold into one menu button, the categories become an
   icon rail (or a drawer) with a resizable splitter, low-priority columns hide and narrow windows get two-line rows.

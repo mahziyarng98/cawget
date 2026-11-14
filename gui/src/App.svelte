@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
   import AboutDialog from "./lib/AboutDialog.svelte";
   import type { Auth } from "./lib/addflow";
@@ -27,9 +28,9 @@
   import ShortcutsDialog from "./lib/ShortcutsDialog.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
   import { COLUMNS, type TableLayout, defaultLayout, sanitizeLayout, sortJobs, toggleHidden } from "./lib/table";
+  import { type ThemeMode, isThemeMode, mediaPrefersDark, resolveTheme, watchMediaTheme } from "./lib/theme";
   import Toolbar from "./lib/Toolbar.svelte";
 
-  type Theme = "dark" | "light";
   type Dir = "ltr" | "rtl";
   const SOON = "Coming soon";
 
@@ -39,7 +40,13 @@
   let info = $state<AppInfo | null>(null);
   let engineError = $state<string | null>(null);
 
-  let theme = $state<Theme>(loadPref("theme", "dark", (v): v is Theme => v === "dark" || v === "light"));
+  let theme = $state<ThemeMode>(loadPref("theme", "system", isThemeMode));
+  // System mode has two signals: the webview media query (WebKitGTK follows GTK's dark preference) and Tauri's
+  // native window theme (the XDG portal colour-scheme). Either one asking for dark means dark.
+  let mediaDark = $state(mediaPrefersDark());
+  let nativeDark = $state<boolean | null>(null);
+  const systemDark = $derived(mediaDark || nativeDark === true);
+  const resolvedTheme = $derived(resolveTheme(theme, systemDark));
   let dir = $state<Dir>(loadPref("dir", "ltr", (v): v is Dir => v === "ltr" || v === "rtl"));
   let category = $state<CategoryId>(loadPref("category", "all", (v): v is CategoryId => typeof v === "string" && v !== "queues"));
   let layout = $state<TableLayout>(sanitizeLayout(loadPref<unknown>("columns", null, (v): v is unknown => true)));
@@ -81,9 +88,10 @@
 
   // ---------- persistence and document attributes ----------
   $effect(() => {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = resolvedTheme;
     savePref("theme", theme);
   });
+  $effect(() => watchMediaTheme((dark) => (mediaDark = dark)));
   $effect(() => {
     document.documentElement.dir = dir;
     savePref("dir", dir);
@@ -158,7 +166,7 @@
   }
 
   // ---------- derived ----------
-  const logo = $derived(logoFor(theme));
+  const logo = $derived(logoFor(resolvedTheme));
   const rows = $derived(sortJobs(jobs.filter((j) => inCategory(j, category)), layout.sort));
   const byId = $derived(new Map(jobs.map((j) => [j.id, j])));
   const sel = $derived(selected.map((id) => byId.get(id)).filter((j): j is Job => !!j));
@@ -279,7 +287,7 @@
   const openFolder = () => one && guarded(() => api.openFolder(one.id));
   const properties = () => one && (dialog = { kind: "props", id: one.id });
   const options = () => (dialog = { kind: "options" });
-  const toggleTheme = () => (theme = theme === "dark" ? "light" : "dark");
+  const toggleTheme = () => (theme = resolvedTheme === "dark" ? "light" : "dark");
   // Exit really quits, also when the close button only hides the window to the tray.
   const quit = () => guarded(() => api.quitApp());
   function openContextAtCursor() {
@@ -395,8 +403,9 @@
         item("zoomOut", "Zoom out", () => run("zoomOut"), { shortcut: "Ctrl+-" }),
         item("zoomReset", `Actual size (now ${Math.round(zoom * 100)}%)`, () => run("zoomReset"), { shortcut: "Ctrl+0" }),
         sep,
+        item("system", "System theme", () => (theme = "system"), { role: "radio", checked: theme === "system" }),
         item("dark", "Dark theme", () => (theme = "dark"), { role: "radio", checked: theme === "dark" }),
-        item("light", "Light theme", () => (theme = "light"), { role: "radio", checked: theme === "light", shortcut: "Ctrl+Shift+L" }),
+        item("light", "Light theme", () => (theme = "light"), { role: "radio", checked: theme === "light" }),
         sep,
         item("ltr", "Left-to-right layout", () => (dir = "ltr"), { role: "radio", checked: dir === "ltr" }),
         item("rtl", "Right-to-left layout", () => (dir = "rtl"), { role: "radio", checked: dir === "rtl" }),
@@ -470,6 +479,18 @@
     // Like a desktop download manager, the list has the keyboard focus at start.
     requestAnimationFrame(() => document.querySelector<HTMLElement>("[role=grid]")?.focus());
     const unlisten: (() => void)[] = [];
+    // Tauri's native window theme reads the desktop's XDG portal colour-scheme on Linux. It complements the
+    // WebKitGTK media query, which follows GTK's dark preference (Tauri sets that from the same portal).
+    if ("__TAURI_INTERNALS__" in window) {
+      getCurrentWindow()
+        .theme()
+        .then((t) => { if (t) nativeDark = t === "dark"; })
+        .catch(() => {});
+      getCurrentWindow()
+        .onThemeChanged(({ payload }) => (nativeDark = payload === "dark"))
+        .then((u) => unlisten.push(u))
+        .catch(() => {});
+    }
     (async () => {
       jobs = await api.listJobs();
       await refreshSettings();
