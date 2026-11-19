@@ -7,7 +7,7 @@ Cawget is an independent implementation. It uses no third-party proprietary code
 
 ![Cawget main window on a wide screen](docs/screenshots/wide.png)
 
-> **Status:** 0.1.1, an early release. Expect rough edges; see [Planned](#planned).
+> **Status:** [0.1.2](https://github.com/mahziyarng98/cawget/releases/tag/v0.1.2), an early release. Expect rough edges; see [Planned](#planned) and the [changelog](CHANGELOG.md).
 
 ## Install
 
@@ -16,7 +16,9 @@ Download a package from the [Releases page](https://github.com/mahziyarng98/cawg
 - **AppImage** (any x86_64 Linux, no installation): `chmod +x Cawget_<version>_amd64.AppImage`, then run it.
 - **Debian / Ubuntu:** `sudo apt install ./Cawget_<version>_amd64.deb`, then start **Cawget** from the menu.
 - **Fedora / openSUSE:** `sudo dnf install ./Cawget-<version>-1.x86_64.rpm` (or `zypper install`).
-- **Flatpak bundle** (x86_64, *not on Flathub*): download `cawget-0.1.1-x86_64.flatpak`, then run
+- **Flatpak bundle** (x86_64, *not on Flathub*): the available bundle is **0.1.1**, from the
+  [0.1.1 release](https://github.com/mahziyarng98/cawget/releases/tag/v0.1.1); **0.1.2 has no Flatpak bundle**.
+  Download `cawget-0.1.1-x86_64.flatpak`, then run
   `flatpak install --user cawget-0.1.1-x86_64.flatpak` ([details](docs/INSTALL.md#flatpak-bundle)).
 - **Arch Linux:** an AUR package is *coming soon* (AUR registration is temporarily closed). For now, download the
   [PKGBUILD](https://raw.githubusercontent.com/mahziyarng98/cawget/main/packaging/aur/PKGBUILD) into an empty
@@ -164,6 +166,15 @@ gui/                       desktop app: Svelte 5 frontend (src), Tauri v2 shell 
 packaging/                 desktop entry, man page
 shared/                    category table shared by the engine and the UI
 ```
+
+## Feedback and maintenance
+
+Report reproducible problems with the [bug report form](https://github.com/mahziyarng98/cawget/issues/new?template=bug_report.yml).
+To share an installation result, including a successful one, use the
+[installation feedback form](https://github.com/mahziyarng98/cawget/issues/new?template=installation_feedback.yml).
+Include the exact release, package, distribution, and desktop session; remove private URLs and credentials.
+Release preparation and the distinction between verified and untested platforms are documented in
+[docs/MAINTENANCE.md](docs/MAINTENANCE.md).
 
 ## Licence
 
