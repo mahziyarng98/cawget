@@ -19,6 +19,9 @@ python3 scripts/third_party_licenses.py --check   # after changing dependencies:
 
 Use `cargo fmt --all` to fix formatting reported by the check.
 
+For release preparation, installation feedback, and recording what was actually tested, see
+[the maintenance guide](docs/MAINTENANCE.md).
+
 ## Guidelines
 
 - Keep changes small and focused; add or update a test for behaviour changes.

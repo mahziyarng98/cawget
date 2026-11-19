@@ -10,7 +10,8 @@ Cawget is distributed as ready-made packages on the
 | Fedora, openSUSE and other RPM-based systems | `.rpm` | [Fedora and openSUSE](#fedora-opensuse-and-other-rpm-systems-rpm) |
 | Arch Linux | AUR: **coming soon** (AUR registration is temporarily closed); for now `makepkg` or the AppImage | [Arch Linux](#arch-linux) |
 
-In the commands below, replace `<version>` with the version you downloaded, for example `0.1.1`.
+In the commands below, replace `<version>` with the version you downloaded, for example `0.1.2`.
+The Flatpak bundle is versioned separately below because 0.1.2 has no Flatpak asset.
 
 ## What has been tested
 
@@ -106,6 +107,10 @@ To remove it: `sudo dnf remove cawget` (Fedora) or `sudo zypper remove cawget` (
 A single-file Flatpak for x86_64. **Cawget is not on Flathub**; this bundle from the Releases page is the only
 Flatpak build. You need Flatpak installed and the Flathub remote added (the bundle uses the GNOME runtime from
 Flathub). It was built and tested on Arch Linux (Hyprland).
+
+Download the bundle and its `.sha256` file from the
+[0.1.1 release](https://github.com/mahziyarng98/cawget/releases/tag/v0.1.1).
+That bundle remains at **0.1.1**; use the AppImage, .deb, or .rpm for **0.1.2**.
 
 ```sh
 sha256sum -c cawget-0.1.1-x86_64.flatpak.sha256     # run in the folder with both downloaded files

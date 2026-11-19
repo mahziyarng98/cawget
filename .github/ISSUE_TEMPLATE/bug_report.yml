@@ -34,7 +34,7 @@ body:
     id: package
     attributes:
       label: How did you install it?
-      options: [AppImage, .deb, .rpm, Built from source]
+      options: [AppImage, .deb, .rpm, Flatpak bundle, Arch PKGBUILD, Built from source, Other]
     validations:
       required: true
   - type: input

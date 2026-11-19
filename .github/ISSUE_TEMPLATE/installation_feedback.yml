@@ -1,0 +1,49 @@
+name: Installation feedback
+description: Share a successful installation or a package compatibility result
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report one release and environment per submission. For a reproducible application bug, use Bug report.
+        Do not include credentials, private download URLs, or database files. Use SECURITY.md for security reports.
+  - type: input
+    id: version
+    attributes:
+      label: Exact Cawget version
+      description: Read Help > About; include the commit if built from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options: [AppImage, .deb, .rpm, Flatpak bundle, Arch PKGBUILD, Built from source, Other]
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Distribution, version, architecture, and desktop session
+      placeholder: e.g. Ubuntu 24.04, x86_64, GNOME on Wayland
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options: [Installed and launched successfully, Installed but could not launch, Installation failed, Partly working]
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: What did you check?
+      description: Record only checks you performed, including commands, visible results, and any limitations.
+      placeholder: Installation, first launch, a public test download, pause/resume, restart, tray, light/dark theme.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized output or screenshots
+      description: Optional supporting evidence. Remove private paths, URLs, cookies, and credentials.
